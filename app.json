@@ -4,6 +4,15 @@
     "slug": "neokyc",
     "version": "1.0.0",
     "orientation": "portrait",
-    "userInterfaceStyle": "dark"
+    "userInterfaceStyle": "dark",
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow NeoKYC to select an identity document for text extraction.",
+          "microphonePermission": false
+        }
+      ]
+    ]
   }
 }
