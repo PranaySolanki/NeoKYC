@@ -17,115 +17,186 @@ interface ExtractedFields {
   name: string | null;
   dob: string | null;
   gender: string | null;
-  id_detected: boolean;
+  id_number: string | null;
+}
+
+interface BoundingBox {
+  top?: number;
+  left?: number;
+  width?: number;
+  height?: number;
+  bottom?: number;
+  right?: number;
+  y?: number;
+  x?: number;
+}
+
+interface SpatialLine {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 export const DocumentScanScreen = () => {
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<any>(null);
 
-  const [isTorchOn, setIsTorchOn] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [rawText, setRawText] = useState('');
+  const [isTorchOn, setIsTorchOn] = useState<boolean>(false);
+  const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [rawText, setRawText] = useState<string>('');
   const [parsedFields, setParsedFields] = useState<ExtractedFields | null>(null);
-  const [statusMessage, setStatusMessage] = useState('Position ID card inside the frame and capture.');
+  const [statusMessage, setStatusMessage] = useState<string>(
+    'Position ID card inside the frame and capture.'
+  );
 
-  // Clean candidate name string
-  const sanitizeName = (str: string): string => {
+  const cleanString = (str: string): string => {
     return str
-      .replace(/[^a-zA-Z\s]/g, '')
+      .replace(/[^a-zA-Z\s]/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
   };
 
-  // High-Precision ML Kit Spatial & Semantic Parser
   const parseMLKitResult = (ocrResult: any) => {
-    const fullText = ocrResult.text || '';
+    const fullText: string = ocrResult.text || '';
     setRawText(fullText);
 
-    const blocks = ocrResult.blocks || [];
-    const allLines: string[] = [];
+    // 1. Flatten all blocks and lines with spatial coordinates
+    const spatialLines: SpatialLine[] = [];
 
-    blocks.forEach((b: any) => {
-      if (b.lines) {
-        b.lines.forEach((l: any) => allLines.push(l.text.trim()));
+    (ocrResult.blocks || []).forEach((b: any) => {
+      if (b.lines && Array.isArray(b.lines)) {
+        b.lines.forEach((l: any) => {
+          const t = l.text?.trim();
+          if (t && t.length > 1) {
+            const frame: BoundingBox = l.frame || l.boundingBox || b.frame || b.boundingBox || {};
+            const y = frame.top ?? frame.y ?? 0;
+            const x = frame.left ?? frame.x ?? 0;
+            const width = frame.width ?? 0;
+            const height = frame.height ?? 0;
+
+            spatialLines.push({ text: t, x, y, width, height });
+          }
+        });
       } else if (b.text) {
-        allLines.push(b.text.trim());
+        const frame: BoundingBox = b.frame || b.boundingBox || {};
+        spatialLines.push({
+          text: b.text.trim(),
+          x: frame.left ?? frame.x ?? 0,
+          y: frame.top ?? frame.y ?? 0,
+          width: frame.width ?? 0,
+          height: frame.height ?? 0,
+        });
       }
     });
 
-    const normalizedFull = fullText.replace(/[^a-zA-Z0-9\s/:\-]/g, ' ');
+    // 2. Sort all lines in 2D reading order (top-to-bottom)
+    spatialLines.sort((a, b) => {
+      if (Math.abs(a.y - b.y) > 15) {
+        return a.y - b.y;
+      }
+      return a.x - b.x;
+    });
 
-    // 1. Detect 12-digit ID Number pattern
-    const idPattern = /\b\d{4}\s\d{4}\s\d{4}\b|\b\d{12}\b/;
-    const id_detected = idPattern.test(normalizedFull);
+    const normalizedFull: string = fullText.replace(/[^a-zA-Z0-9\s/:\-]/g, ' ');
 
-    // 2. Extract Gender
-    const genderMatch = normalizedFull.match(/\b(MALE|FEMALE|TRANSGENDER|Male|Female|Transgender)\b/i);
-    const gender = genderMatch ? genderMatch[1].toUpperCase() : null;
+    // 3. Extract 12-digit Card ID Number and strip all spaces
+    const idMatch =
+      normalizedFull.match(/\b\d{4}\s\d{4}\s\d{4}\b/) ||
+      normalizedFull.match(/\b\d{12}\b/);
+    const id_number: string | null = idMatch ? idMatch[0].replace(/\s+/g, '') : null;
 
-    // 3. Extract DOB / YOB
-    const dobRegex = /(?:DOB|Date of Birth|Year of Birth)[:\s\-]*([0-9]{2}[/\-][0-9]{2}[/\-][0-9]{4}|[0-9]{4})/i;
-    const directDateRegex = /\b(\d{2}[/\-]\d{2}[/\-]\d{4})\b/;
+    // 4. Extract Gender
+    const genderMatch = normalizedFull.match(
+      /\b(MALE|FEMALE|TRANSGENDER|Male|Female|Transgender)\b/i
+    );
+    const gender: string | null = genderMatch ? genderMatch[1].toUpperCase() : null;
 
-    const dobMatch = fullText.match(dobRegex) || fullText.match(directDateRegex);
+    // 5. Extract Date of Birth & Spatial Anchor
+    const dobRegex =
+      /(?:DOB|Date of Birth|Year of Birth|DOB\/Date)[:\s\-]*([0-9]{2}[/\-][0-9]{2}[/\-][0-9]{4}|[0-9]{4})/i;
+    const dateRegex = /\b(\d{2}[/\-]\d{2}[/\-]\d{4})\b/;
+
+    const dobMatch = fullText.match(dobRegex) || fullText.match(dateRegex);
     let dob: string | null = null;
     if (dobMatch) {
       dob = dobMatch[1] || dobMatch[0];
     }
 
-    // 4. Extract Name (Line directly preceding the DOB line)
-    const blacklist = [
-      'GOVERNMENT', 'INDIA', 'AUTHORITY', 'UNIQUE', 'IDENTIFICATION',
-      'ENROLMENT', 'MALE', 'FEMALE', 'DOB', 'DATE', 'BIRTH', 'YEAR',
-      'CARD', 'ADDRESS', 'FATHER', 'HUSBAND', 'HELP', 'WWW', 'UIDAI'
-    ];
+    let dobSpatialAnchor: SpatialLine | null = null;
+    let dobIndexInSorted = -1;
 
-    let anchorIndex = -1;
-    for (let i = 0; i < allLines.length; i++) {
-      const upper = allLines[i].toUpperCase();
+    for (let i = 0; i < spatialLines.length; i++) {
+      const upper = spatialLines[i].text.toUpperCase();
       if (
         upper.includes('DOB') ||
         upper.includes('DATE OF BIRTH') ||
         upper.includes('YEAR OF BIRTH') ||
-        /\d{2}[/\-]\d{2}[/\-]\d{4}/.test(upper)
+        dateRegex.test(upper)
       ) {
-        anchorIndex = i;
+        dobSpatialAnchor = spatialLines[i];
+        dobIndexInSorted = i;
         break;
       }
     }
 
+    // 6. Name Extraction Filtering
+    const blacklist: string[] = [
+      'GOVERNMENT', 'INDIA', 'AUTHORITY', 'UNIQUE', 'IDENTIFICATION',
+      'ENROLMENT', 'MALE', 'FEMALE', 'DOB', 'DATE', 'BIRTH', 'YEAR',
+      'CARD', 'ADDRESS', 'FATHER', 'HUSBAND', 'HELP', 'WWW', 'UIDAI',
+      'VID', 'DOWNLOAD', 'STATE', 'ROAD', 'NAGAR', 'MARG', 'LANE',
+      'DIST', 'MAHARASHTRA', 'MUMBAI', 'DELHI', 'GUJARAT', 'COPILOT',
+      'NEAR', 'BLOCK', 'FLAT', 'STREET', 'ENROLLMENT', 'AADHAAR', 'AADHAR'
+    ];
+
+    const isValidCandidate = (rawStr: string): boolean => {
+      const cleaned = cleanString(rawStr);
+      const upper = cleaned.toUpperCase();
+      const words = cleaned.split(' ').filter((w) => w.length >= 2);
+
+      const isBlacklisted = blacklist.some((term) => upper.includes(term));
+      return !isBlacklisted && words.length >= 2 && words.length <= 4;
+    };
+
     let name: string | null = null;
 
-    if (anchorIndex > 0) {
-      for (let j = anchorIndex - 1; j >= Math.max(0, anchorIndex - 3); j--) {
-        const candidate = sanitizeName(allLines[j]);
-        const upperCandidate = candidate.toUpperCase();
-        const isBlacklisted = blacklist.some((term) => upperCandidate.includes(term));
-        const words = candidate.split(' ').filter((w) => w.length >= 2);
+    // Strategy 1: Closest text situated directly above DOB in 2D space
+    if (dobSpatialAnchor && dobSpatialAnchor.y > 0) {
+      const candidatesAbove = spatialLines.filter((line) => {
+        const isAbove = line.y < dobSpatialAnchor!.y;
+        const isWithinRange = dobSpatialAnchor!.y - line.y < 350;
+        return isAbove && isWithinRange && isValidCandidate(line.text);
+      });
 
-        if (!isBlacklisted && words.length >= 2 && words.length <= 4) {
-          name = words.map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+      if (candidatesAbove.length > 0) {
+        const closest = candidatesAbove.sort((a, b) => b.y - a.y)[0];
+        name = cleanString(closest.text);
+      }
+    }
+
+    // Strategy 2: Sorted line reverse traversal
+    if (!name && dobIndexInSorted > 0) {
+      for (let j = dobIndexInSorted - 1; j >= Math.max(0, dobIndexInSorted - 4); j--) {
+        if (isValidCandidate(spatialLines[j].text)) {
+          name = cleanString(spatialLines[j].text);
           break;
         }
       }
     }
 
+    // Strategy 3: Global fallback
     if (!name) {
-      for (const line of allLines) {
-        const candidate = sanitizeName(line);
-        const upperCandidate = candidate.toUpperCase();
-        const isBlacklisted = blacklist.some((term) => upperCandidate.includes(term));
-        const words = candidate.split(' ').filter((w) => w.length >= 2);
-
-        if (!isBlacklisted && words.length >= 2 && words.length <= 4) {
-          name = words.map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+      for (const line of spatialLines) {
+        if (isValidCandidate(line.text)) {
+          name = cleanString(line.text);
           break;
         }
       }
     }
 
-    setParsedFields({ name, dob, gender, id_detected });
+    setParsedFields({ name, dob, gender, id_number });
   };
 
   const takePhotoAndScan = async () => {
@@ -133,7 +204,7 @@ export const DocumentScanScreen = () => {
 
     try {
       setIsProcessing(true);
-      setStatusMessage('Running native on-device Google ML Kit...');
+      setStatusMessage('Analyzing card via 2D Spatial Google ML Kit...');
 
       const photo = await cameraRef.current.takePictureAsync({
         quality: 1.0,
@@ -141,7 +212,6 @@ export const DocumentScanScreen = () => {
       });
 
       if (photo?.uri) {
-        // Native C++ Google ML Kit call directly on the device
         const result = await recognizeText(photo.uri);
         parseMLKitResult(result);
         setStatusMessage('Document parsed successfully!');
@@ -149,7 +219,7 @@ export const DocumentScanScreen = () => {
         setStatusMessage('Camera capture failed.');
       }
     } catch (err: any) {
-      setStatusMessage('ML Kit Error: ' + (err.message || 'Processing failed'));
+      setStatusMessage('Scan Error: ' + (err.message || 'Processing failed'));
     } finally {
       setIsProcessing(false);
     }
@@ -181,7 +251,7 @@ export const DocumentScanScreen = () => {
         />
         <View style={styles.darkMask} />
 
-        {/* Flash Button */}
+        {/* Flash Toggle */}
         <TouchableOpacity
           style={[styles.flashButton, isTorchOn && styles.flashButtonActive]}
           onPress={() => setIsTorchOn((prev) => !prev)}
@@ -189,7 +259,7 @@ export const DocumentScanScreen = () => {
           <Text style={styles.flashIcon}>{isTorchOn ? '⚡ Flash ON' : '💡 Flash OFF'}</Text>
         </TouchableOpacity>
 
-        {/* Framing Guide */}
+        {/* Alignment Window */}
         <View style={styles.guideBox}>
           <View style={[styles.corner, styles.topLeft]} />
           <View style={[styles.topRight, styles.corner]} />
@@ -199,7 +269,7 @@ export const DocumentScanScreen = () => {
         </View>
       </View>
 
-      {/* Capture Button */}
+      {/* Capture Action */}
       <TouchableOpacity
         style={[styles.primaryButton, isProcessing && styles.disabledButton]}
         onPress={takePhotoAndScan}
@@ -208,11 +278,11 @@ export const DocumentScanScreen = () => {
         {isProcessing ? (
           <ActivityIndicator color="#FFFFFF" />
         ) : (
-          <Text style={styles.buttonText}>📸 Capture & Run ML Kit OCR</Text>
+          <Text style={styles.buttonText}>📸 Capture & Extract</Text>
         )}
       </TouchableOpacity>
 
-      {/* Parsed Identity Fields */}
+      {/* Structured KYC Identity Record */}
       {parsedFields && (
         <View style={styles.labelsCard}>
           <Text style={styles.cardHeader}>PARSED IDENTITY FIELDS</Text>
@@ -233,9 +303,9 @@ export const DocumentScanScreen = () => {
           </View>
 
           <View style={styles.fieldRow}>
-            <Text style={styles.fieldKey}>ID Pattern:</Text>
-            <Text style={[styles.fieldVal, { color: parsedFields.id_detected ? '#38BDF8' : '#94A3B8' }]}>
-              {parsedFields.id_detected ? '12-Digit Format Verified' : 'Not detected'}
+            <Text style={styles.fieldKey}>Card ID Number:</Text>
+            <Text style={[styles.fieldVal, styles.highlightVal]}>
+              {parsedFields.id_number || 'Not detected'}
             </Text>
           </View>
         </View>
@@ -267,9 +337,24 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 24,
   },
-  permText: { color: '#94A3B8', fontSize: 16, textAlign: 'center', marginBottom: 20 },
-  title: { color: '#F8FAFC', fontSize: 22, fontWeight: '700', marginBottom: 6 },
-  subtitle: { color: '#94A3B8', fontSize: 13, lineHeight: 18, marginBottom: 16 },
+  permText: {
+    color: '#94A3B8',
+    fontSize: 16,
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  title: {
+    color: '#F8FAFC',
+    fontSize: 22,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  subtitle: {
+    color: '#94A3B8',
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 16,
+  },
   cameraContainer: {
     width: '100%',
     height: 280,
@@ -283,7 +368,10 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     position: 'relative',
   },
-  darkMask: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(2, 6, 23, 0.45)' },
+  darkMask: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(2, 6, 23, 0.45)',
+  },
   flashButton: {
     position: 'absolute',
     top: 12,
@@ -296,8 +384,15 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     zIndex: 10,
   },
-  flashButtonActive: { backgroundColor: '#0284C7', borderColor: '#38BDF8' },
-  flashIcon: { color: '#F8FAFC', fontSize: 12, fontWeight: '700' },
+  flashButtonActive: {
+    backgroundColor: '#0284C7',
+    borderColor: '#38BDF8',
+  },
+  flashIcon: {
+    color: '#F8FAFC',
+    fontSize: 12,
+    fontWeight: '700',
+  },
   guideBox: {
     width: SCREEN_WIDTH * 0.88,
     height: SCREEN_WIDTH * 0.88 * 0.63,
@@ -308,12 +403,22 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: 'transparent',
   },
-  corner: { position: 'absolute', width: 20, height: 20, borderColor: '#0EA5E9' },
+  corner: {
+    position: 'absolute',
+    width: 20,
+    height: 20,
+    borderColor: '#0EA5E9',
+  },
   topLeft: { top: -2, left: -2, borderTopWidth: 3, borderLeftWidth: 3 },
   topRight: { top: -2, right: -2, borderTopWidth: 3, borderRightWidth: 3 },
   bottomLeft: { bottom: -2, left: -2, borderBottomWidth: 3, borderLeftWidth: 3 },
   bottomRight: { bottom: -2, right: -2, borderBottomWidth: 3, borderRightWidth: 3 },
-  guideText: { color: 'rgba(248, 250, 252, 0.75)', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 },
+  guideText: {
+    color: 'rgba(248, 250, 252, 0.75)',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+  },
   primaryButton: {
     alignItems: 'center',
     backgroundColor: '#0EA5E9',
@@ -321,8 +426,14 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     paddingVertical: 14,
   },
-  disabledButton: { backgroundColor: '#475569' },
-  buttonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
+  disabledButton: {
+    backgroundColor: '#475569',
+  },
+  buttonText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
   labelsCard: {
     backgroundColor: '#1E293B',
     borderRadius: 12,
@@ -331,11 +442,38 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#38BDF8',
   },
-  cardHeader: { color: '#38BDF8', fontSize: 12, fontWeight: '800', letterSpacing: 1, marginBottom: 12 },
-  fieldRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
-  fieldKey: { color: '#94A3B8', fontSize: 14, fontWeight: '600' },
-  fieldVal: { color: '#F8FAFC', fontSize: 14, fontWeight: '700' },
-  resultLabel: { color: '#CBD5E1', fontSize: 14, fontWeight: '700', marginBottom: 8 },
+  cardHeader: {
+    color: '#38BDF8',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1,
+    marginBottom: 12,
+  },
+  fieldRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  fieldKey: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  fieldVal: {
+    color: '#F8FAFC',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  highlightVal: {
+    color: '#38BDF8',
+    letterSpacing: 0.8,
+  },
+  resultLabel: {
+    color: '#CBD5E1',
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
   resultBox: {
     backgroundColor: '#020617',
     borderColor: '#334155',
@@ -344,6 +482,14 @@ const styles = StyleSheet.create({
     minHeight: 100,
     padding: 16,
   },
-  rawText: { color: '#E2E8F0', fontSize: 14, lineHeight: 21 },
-  placeholderText: { color: '#64748B', fontSize: 14, fontStyle: 'italic' },
+  rawText: {
+    color: '#E2E8F0',
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  placeholderText: {
+    color: '#64748B',
+    fontSize: 14,
+    fontStyle: 'italic',
+  },
 });
