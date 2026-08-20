@@ -13,6 +13,9 @@
           "microphonePermission": false
         }
       ]
-    ]
+    ],
+    "android": {
+      "package": "com.user1082.neokyc"
+    }
   }
 }
