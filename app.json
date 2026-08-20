@@ -1,18 +1,9 @@
 {
   "expo": {
-    "name": "ZeroTrust eKYC",
-    "slug": "zerotrust-ekyc",
+    "name": "NeoKYC",
+    "slug": "neokyc",
     "version": "1.0.0",
     "orientation": "portrait",
-    "userInterfaceStyle": "dark",
-    "android": {
-      "permissions": [
-        "CAMERA",
-        "INTERNET",
-        "CAMERA",
-        "INTERNET"
-      ],
-      "package": "com.siddhi_2305.zerotrustekyc"
-    }
+    "userInterfaceStyle": "dark"
   }
 }

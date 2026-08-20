@@ -1,11 +1,11 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
-export const FaceLivenessScreen = () => {
+export const DocumentScanScreen = () => {
     return (
         <View style={styles.container}>
-            <Text style={styles.title}>Liveness Check</Text>
-            <Text style={styles.subtitle}>Position your face inside the oval guide</Text>
+            <Text style={styles.title}>Document Scan</Text>
+            <Text style={styles.subtitle}>Align your ID within the camera frame</Text>
         </View>
     );
 };
