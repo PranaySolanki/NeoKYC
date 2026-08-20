@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@infinitered/react-native-mlkit-text-recognition": "^5.0.1",
+    "@react-navigation/native": "^7.3.17",
     "expo": "~54.0.37",
     "expo-camera": "~17.0.10",
     "expo-dev-client": "~6.0.21",

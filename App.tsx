@@ -14,7 +14,7 @@ export default function App() {
   const renderScreen = () => {
     switch (currentScreen) {
       case 'DocumentScan':
-        return <DocumentScanScreen />;
+        return <DocumentScanScreen onNavigate={setCurrentScreen} />;
       case 'FaceLiveness':
         return <FaceLivenessScreen />;
       case 'Result':
