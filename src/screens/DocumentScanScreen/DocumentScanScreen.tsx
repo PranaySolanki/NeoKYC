@@ -7,17 +7,24 @@ import {
   ScrollView,
   ActivityIndicator,
   Dimensions,
+  Image,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { recognizeText } from '@infinitered/react-native-mlkit-text-recognition';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
+export interface DocumentScanScreenProps {
+  onNavigate?: (screenName: string) => void;
+}
+
 interface ExtractedFields {
   name: string | null;
   dob: string | null;
   gender: string | null;
   id_number: string | null;
+  isValid: boolean;
+  missingFields: string[];
 }
 
 interface BoundingBox {
@@ -39,14 +46,16 @@ interface SpatialLine {
   height: number;
 }
 
-export const DocumentScanScreen = () => {
+export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({ onNavigate }) => {
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<any>(null);
 
   const [isTorchOn, setIsTorchOn] = useState<boolean>(false);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [capturedImageUri, setCapturedImageUri] = useState<string | null>(null);
   const [rawText, setRawText] = useState<string>('');
   const [parsedFields, setParsedFields] = useState<ExtractedFields | null>(null);
+  const [isDetailsConfirmed, setIsDetailsConfirmed] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string>(
     'Position ID card inside the frame and capture.'
   );
@@ -62,7 +71,6 @@ export const DocumentScanScreen = () => {
     const fullText: string = ocrResult.text || '';
     setRawText(fullText);
 
-    // 1. Flatten all blocks and lines with spatial coordinates
     const spatialLines: SpatialLine[] = [];
 
     (ocrResult.blocks || []).forEach((b: any) => {
@@ -91,7 +99,7 @@ export const DocumentScanScreen = () => {
       }
     });
 
-    // 2. Sort all lines in 2D reading order (top-to-bottom)
+    // Sort reading order: top-to-bottom, left-to-right
     spatialLines.sort((a, b) => {
       if (Math.abs(a.y - b.y) > 15) {
         return a.y - b.y;
@@ -101,19 +109,19 @@ export const DocumentScanScreen = () => {
 
     const normalizedFull: string = fullText.replace(/[^a-zA-Z0-9\s/:\-]/g, ' ');
 
-    // 3. Extract 12-digit Card ID Number and strip all spaces
+    // 1. Extract 12-digit Card ID Number (stripped of spaces)
     const idMatch =
       normalizedFull.match(/\b\d{4}\s\d{4}\s\d{4}\b/) ||
       normalizedFull.match(/\b\d{12}\b/);
     const id_number: string | null = idMatch ? idMatch[0].replace(/\s+/g, '') : null;
 
-    // 4. Extract Gender
+    // 2. Extract Gender
     const genderMatch = normalizedFull.match(
       /\b(MALE|FEMALE|TRANSGENDER|Male|Female|Transgender)\b/i
     );
     const gender: string | null = genderMatch ? genderMatch[1].toUpperCase() : null;
 
-    // 5. Extract Date of Birth & Spatial Anchor
+    // 3. Extract Date of Birth
     const dobRegex =
       /(?:DOB|Date of Birth|Year of Birth|DOB\/Date)[:\s\-]*([0-9]{2}[/\-][0-9]{2}[/\-][0-9]{4}|[0-9]{4})/i;
     const dateRegex = /\b(\d{2}[/\-]\d{2}[/\-]\d{4})\b/;
@@ -141,7 +149,7 @@ export const DocumentScanScreen = () => {
       }
     }
 
-    // 6. Name Extraction Filtering
+    // 4. Extract Name
     const blacklist: string[] = [
       'GOVERNMENT', 'INDIA', 'AUTHORITY', 'UNIQUE', 'IDENTIFICATION',
       'ENROLMENT', 'MALE', 'FEMALE', 'DOB', 'DATE', 'BIRTH', 'YEAR',
@@ -162,7 +170,6 @@ export const DocumentScanScreen = () => {
 
     let name: string | null = null;
 
-    // Strategy 1: Closest text situated directly above DOB in 2D space
     if (dobSpatialAnchor && dobSpatialAnchor.y > 0) {
       const candidatesAbove = spatialLines.filter((line) => {
         const isAbove = line.y < dobSpatialAnchor!.y;
@@ -176,7 +183,6 @@ export const DocumentScanScreen = () => {
       }
     }
 
-    // Strategy 2: Sorted line reverse traversal
     if (!name && dobIndexInSorted > 0) {
       for (let j = dobIndexInSorted - 1; j >= Math.max(0, dobIndexInSorted - 4); j--) {
         if (isValidCandidate(spatialLines[j].text)) {
@@ -186,7 +192,6 @@ export const DocumentScanScreen = () => {
       }
     }
 
-    // Strategy 3: Global fallback
     if (!name) {
       for (const line of spatialLines) {
         if (isValidCandidate(line.text)) {
@@ -196,7 +201,29 @@ export const DocumentScanScreen = () => {
       }
     }
 
-    setParsedFields({ name, dob, gender, id_number });
+    // 5. Validation Check
+    const missing: string[] = [];
+    if (!name) missing.push('Name');
+    if (!dob) missing.push('Date of Birth');
+    if (!gender) missing.push('Gender');
+    if (!id_number) missing.push('ID Number');
+
+    const isValid = missing.length === 0;
+
+    if (!isValid) {
+      setStatusMessage(`⚠️ Missing: ${missing.join(', ')}. Please retake in a well-lit environment.`);
+    } else {
+      setStatusMessage('Please verify your extracted details below.');
+    }
+
+    setParsedFields({
+      name,
+      dob,
+      gender,
+      id_number,
+      isValid,
+      missingFields: missing,
+    });
   };
 
   const takePhotoAndScan = async () => {
@@ -204,7 +231,7 @@ export const DocumentScanScreen = () => {
 
     try {
       setIsProcessing(true);
-      setStatusMessage('Analyzing card via 2D Spatial Google ML Kit...');
+      setStatusMessage('Extracting data from card...');
 
       const photo = await cameraRef.current.takePictureAsync({
         quality: 1.0,
@@ -212,17 +239,26 @@ export const DocumentScanScreen = () => {
       });
 
       if (photo?.uri) {
+        setCapturedImageUri(photo.uri);
+        setIsDetailsConfirmed(false);
         const result = await recognizeText(photo.uri);
         parseMLKitResult(result);
-        setStatusMessage('Document parsed successfully!');
       } else {
-        setStatusMessage('Camera capture failed.');
+        setStatusMessage('Camera capture failed. Please try again.');
       }
     } catch (err: any) {
       setStatusMessage('Scan Error: ' + (err.message || 'Processing failed'));
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const handleRecapture = () => {
+    setCapturedImageUri(null);
+    setParsedFields(null);
+    setIsDetailsConfirmed(false);
+    setRawText('');
+    setStatusMessage('Position ID card inside the frame and capture.');
   };
 
   if (!permission?.granted) {
@@ -238,86 +274,203 @@ export const DocumentScanScreen = () => {
 
   return (
     <ScrollView contentContainerStyle={styles.scrollContainer}>
-      <Text style={styles.title}>Document Scan</Text>
-      <Text style={styles.subtitle}>{statusMessage}</Text>
+      <Text style={styles.title}>Document Verification</Text>
+      <Text
+        style={[
+          styles.subtitle,
+          parsedFields && !parsedFields.isValid && styles.warningSubtitle,
+        ]}
+      >
+        {statusMessage}
+      </Text>
 
-      {/* Live Viewfinder */}
+      {/* Viewfinder: Active Camera or Frozen Still Frame */}
       <View style={styles.cameraContainer}>
-        <CameraView
-          ref={cameraRef}
-          style={StyleSheet.absoluteFillObject}
-          facing="back"
-          enableTorch={isTorchOn}
-        />
+        {capturedImageUri ? (
+          <Image
+            source={{ uri: capturedImageUri }}
+            style={StyleSheet.absoluteFillObject}
+            resizeMode="cover"
+          />
+        ) : (
+          <CameraView
+            ref={cameraRef}
+            style={StyleSheet.absoluteFillObject}
+            facing="back"
+            enableTorch={isTorchOn}
+          />
+        )}
+
         <View style={styles.darkMask} />
 
-        {/* Flash Toggle */}
-        <TouchableOpacity
-          style={[styles.flashButton, isTorchOn && styles.flashButtonActive]}
-          onPress={() => setIsTorchOn((prev) => !prev)}
-        >
-          <Text style={styles.flashIcon}>{isTorchOn ? '⚡ Flash ON' : '💡 Flash OFF'}</Text>
-        </TouchableOpacity>
+        {/* Torch Toggle */}
+        {!capturedImageUri && (
+          <TouchableOpacity
+            style={[styles.flashButton, isTorchOn && styles.flashButtonActive]}
+            onPress={() => setIsTorchOn((prev) => !prev)}
+          >
+            <Text style={styles.flashIcon}>{isTorchOn ? '⚡ Flash ON' : '💡 Flash OFF'}</Text>
+          </TouchableOpacity>
+        )}
 
-        {/* Alignment Window */}
-        <View style={styles.guideBox}>
+        {/* Alignment Guide */}
+        <View
+          style={[
+            styles.guideBox,
+            parsedFields && !parsedFields.isValid && styles.guideBoxError,
+          ]}
+        >
           <View style={[styles.corner, styles.topLeft]} />
           <View style={[styles.topRight, styles.corner]} />
           <View style={[styles.bottomLeft, styles.corner]} />
           <View style={[styles.bottomRight, styles.corner]} />
-          <Text style={styles.guideText}>ALIGN ID CARD HERE</Text>
+          <Text style={styles.guideText}>
+            {capturedImageUri
+              ? parsedFields?.isValid
+                ? 'CARD CAPTURED'
+                : 'UNCLEAR CAPTURE'
+              : 'ALIGN ID CARD HERE'}
+          </Text>
         </View>
       </View>
 
-      {/* Capture Action */}
-      <TouchableOpacity
-        style={[styles.primaryButton, isProcessing && styles.disabledButton]}
-        onPress={takePhotoAndScan}
-        disabled={isProcessing}
-      >
-        {isProcessing ? (
-          <ActivityIndicator color="#FFFFFF" />
-        ) : (
-          <Text style={styles.buttonText}>📸 Capture & Extract</Text>
-        )}
-      </TouchableOpacity>
+      {/* Initial Capture Action */}
+      {!capturedImageUri && (
+        <TouchableOpacity
+          style={[styles.primaryButton, isProcessing && styles.disabledButton]}
+          onPress={takePhotoAndScan}
+          disabled={isProcessing}
+        >
+          {isProcessing ? (
+            <ActivityIndicator color="#FFFFFF" />
+          ) : (
+            <Text style={styles.buttonText}>📸 Capture & Extract</Text>
+          )}
+        </TouchableOpacity>
+      )}
 
       {/* Structured KYC Identity Record */}
       {parsedFields && (
-        <View style={styles.labelsCard}>
-          <Text style={styles.cardHeader}>PARSED IDENTITY FIELDS</Text>
+        <View
+          style={[
+            styles.labelsCard,
+            !parsedFields.isValid && styles.labelsCardError,
+          ]}
+        >
+          <View style={styles.cardHeaderRow}>
+            <Text style={styles.cardHeader}>CONFIRM IDENTITY DETAILS</Text>
+            <Text
+              style={[
+                styles.statusBadge,
+                parsedFields.isValid ? styles.statusSuccess : styles.statusError,
+              ]}
+            >
+              {parsedFields.isValid ? 'READY FOR REVIEW' : 'INCOMPLETE'}
+            </Text>
+          </View>
 
           <View style={styles.fieldRow}>
             <Text style={styles.fieldKey}>Name:</Text>
-            <Text style={styles.fieldVal}>{parsedFields.name || 'Not detected'}</Text>
+            <Text
+              style={[
+                styles.fieldVal,
+                !parsedFields.name && styles.missingVal,
+              ]}
+            >
+              {parsedFields.name || 'Not detected'}
+            </Text>
           </View>
 
           <View style={styles.fieldRow}>
             <Text style={styles.fieldKey}>DOB / Year:</Text>
-            <Text style={styles.fieldVal}>{parsedFields.dob || 'Not detected'}</Text>
+            <Text
+              style={[
+                styles.fieldVal,
+                !parsedFields.dob && styles.missingVal,
+              ]}
+            >
+              {parsedFields.dob || 'Not detected'}
+            </Text>
           </View>
 
           <View style={styles.fieldRow}>
             <Text style={styles.fieldKey}>Gender:</Text>
-            <Text style={styles.fieldVal}>{parsedFields.gender || 'Not detected'}</Text>
+            <Text
+              style={[
+                styles.fieldVal,
+                !parsedFields.gender && styles.missingVal,
+              ]}
+            >
+              {parsedFields.gender || 'Not detected'}
+            </Text>
           </View>
 
           <View style={styles.fieldRow}>
             <Text style={styles.fieldKey}>Card ID Number:</Text>
-            <Text style={[styles.fieldVal, styles.highlightVal]}>
+            <Text
+              style={[
+                styles.fieldVal,
+                parsedFields.id_number ? styles.highlightVal : styles.missingVal,
+              ]}
+            >
               {parsedFields.id_number || 'Not detected'}
             </Text>
           </View>
+
+          {/* User Confirmation Checkbox */}
+          {parsedFields.isValid && (
+            <TouchableOpacity
+              style={styles.checkboxContainer}
+              onPress={() => setIsDetailsConfirmed((prev) => !prev)}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.checkboxBox, isDetailsConfirmed && styles.checkboxBoxChecked]}>
+                {isDetailsConfirmed && <Text style={styles.checkmarkIcon}>✓</Text>}
+              </View>
+              <Text style={styles.checkboxLabel}>
+                I confirm that the above extracted details match my card accurately.
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+
+      {/* Post-Scan Actions */}
+      {capturedImageUri && (
+        <View style={styles.actionButtonsContainer}>
+          {parsedFields?.isValid && (
+            <TouchableOpacity
+              style={[
+                styles.primaryButton,
+                styles.nextButton,
+                !isDetailsConfirmed && styles.disabledNextButton,
+              ]}
+              onPress={() => onNavigate?.('FaceLiveness')}
+              disabled={!isDetailsConfirmed}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.buttonText}>Next: Face Liveness ➔</Text>
+            </TouchableOpacity>
+          )}
+
+          <TouchableOpacity
+            style={[styles.primaryButton, styles.recaptureButton]}
+            onPress={handleRecapture}
+          >
+            <Text style={styles.recaptureButtonText}>
+              {parsedFields?.isValid ? '🔄 Retake Picture' : '⚠️ Retake Clear Picture'}
+            </Text>
+          </TouchableOpacity>
         </View>
       )}
 
       {/* Raw Output Preview */}
-      <Text style={styles.resultLabel}>ML Kit OCR Output</Text>
+      {/* <Text style={styles.resultLabel}>ML Kit OCR Output</Text>
       <View style={styles.resultBox}>
         <Text style={rawText ? styles.rawText : styles.placeholderText}>
           {rawText || 'OCR output will appear here after capture.'}
         </Text>
-      </View>
+      </View> */}
     </ScrollView>
   );
 };
@@ -327,7 +480,7 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     backgroundColor: '#0F172A',
     paddingHorizontal: 20,
-    paddingTop: 110,
+    paddingTop: 65,
     paddingBottom: 40,
   },
   centerContainer: {
@@ -354,6 +507,10 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     marginBottom: 16,
+  },
+  warningSubtitle: {
+    color: '#F87171',
+    fontWeight: '600',
   },
   cameraContainer: {
     width: '100%',
@@ -403,6 +560,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: 'transparent',
   },
+  guideBoxError: {
+    borderColor: '#EF4444',
+  },
   corner: {
     position: 'absolute',
     width: 20,
@@ -419,12 +579,37 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 1.2,
   },
+  actionButtonsContainer: {
+    width: '100%',
+    marginBottom: 20,
+  },
   primaryButton: {
     alignItems: 'center',
     backgroundColor: '#0EA5E9',
     borderRadius: 12,
-    marginBottom: 20,
+    marginBottom: 12,
     paddingVertical: 14,
+  },
+  nextButton: {
+    backgroundColor: '#0284C7',
+    borderColor: '#38BDF8',
+    borderWidth: 1,
+  },
+  disabledNextButton: {
+    backgroundColor: '#1E293B',
+    borderColor: '#334155',
+    opacity: 0.5,
+  },
+  recaptureButton: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: '#475569',
+    marginBottom: 0,
+  },
+  recaptureButtonText: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: '700',
   },
   disabledButton: {
     backgroundColor: '#475569',
@@ -438,16 +623,41 @@ const styles = StyleSheet.create({
     backgroundColor: '#1E293B',
     borderRadius: 12,
     padding: 16,
-    marginBottom: 20,
+    marginBottom: 16,
     borderWidth: 1,
     borderColor: '#38BDF8',
+  },
+  labelsCardError: {
+    borderColor: '#EF4444',
+    backgroundColor: '#1C1917',
+  },
+  cardHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
   },
   cardHeader: {
     color: '#38BDF8',
     fontSize: 12,
     fontWeight: '800',
     letterSpacing: 1,
-    marginBottom: 12,
+  },
+  statusBadge: {
+    fontSize: 10,
+    fontWeight: '800',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  statusSuccess: {
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+    color: '#38BDF8',
+  },
+  statusError: {
+    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+    color: '#EF4444',
   },
   fieldRow: {
     flexDirection: 'row',
@@ -467,6 +677,46 @@ const styles = StyleSheet.create({
   highlightVal: {
     color: '#38BDF8',
     letterSpacing: 0.8,
+  },
+  missingVal: {
+    color: '#EF4444',
+    fontStyle: 'italic',
+    fontWeight: '600',
+  },
+  checkboxContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(51, 65, 85, 0.6)',
+  },
+  checkboxBox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: '#38BDF8',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    backgroundColor: '#0F172A',
+  },
+  checkboxBoxChecked: {
+    backgroundColor: '#0EA5E9',
+    borderColor: '#0EA5E9',
+  },
+  checkmarkIcon: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  checkboxLabel: {
+    color: '#E2E8F0',
+    fontSize: 12.5,
+    flex: 1,
+    lineHeight: 17,
+    fontWeight: '500',
   },
   resultLabel: {
     color: '#CBD5E1',
