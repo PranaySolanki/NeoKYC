@@ -1,5 +1,4 @@
 import * as ImageManipulator from 'expo-image-manipulator';
-import * as FileSystem from 'expo-file-system';
 import { decode } from 'base64-arraybuffer';
 import { decode as decodeJpeg } from 'jpeg-js'; // or use canvas/bitmap extraction
 
