@@ -36,6 +36,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onNavigate }) => {
         >
           <Text style={styles.buttonText}>3. Verification Result Screen</Text>
         </TouchableOpacity>
+        <TouchableOpacity 
+          style={[styles.button, styles.accentButton]} 
+          onPress={() => onNavigate('RegisterFace')}
+        >
+          <Text style={styles.buttonText}>4. Register Face Screen</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
