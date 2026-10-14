@@ -14,8 +14,14 @@
         }
       ]
     ],
+    "ios": {
+      "infoPlist": {
+        "NSCameraUsageDescription": "NeoKYC uses the front camera to check live face movements during identity verification."
+      }
+    },
     "android": {
-      "package": "com.user1082.neokyc"
+      "package": "com.user1082.neokyc",
+      "permissions": ["android.permission.CAMERA"]
     }
   }
 }

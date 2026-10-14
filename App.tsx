@@ -16,7 +16,7 @@ export default function App() {
       case 'DocumentScan':
         return <DocumentScanScreen onNavigate={setCurrentScreen} />;
       case 'FaceLiveness':
-        return <FaceLivenessScreen />;
+        return <FaceLivenessScreen onNavigate={setCurrentScreen} />;
       case 'Result':
         return <ResultScreen />;
       case 'Home':
