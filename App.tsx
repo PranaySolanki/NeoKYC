@@ -21,7 +21,7 @@ export default function App() {
       case 'Result':
         return <ResultScreen />;
       case 'RegisterFace':
-        return <RegisterFaceScreen />;
+        return <RegisterFaceScreen onNavigate={setCurrentScreen} />;
       case 'Home':
       default:
         return <HomeScreen onNavigate={setCurrentScreen} />;

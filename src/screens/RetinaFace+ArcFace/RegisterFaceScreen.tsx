@@ -17,7 +17,11 @@ import { preprocessPhotoForRetinaFace } from './utils/imagePreprocess';
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SQUARE_SIZE = SCREEN_WIDTH * 0.9; // 90% of screen width for viewfinder & display
 
-export default function RegisterFaceScreen() {
+interface RegisterFaceScreenProps {
+  onNavigate?: (screenName: string) => void;
+}
+
+export default function RegisterFaceScreen({ onNavigate }: RegisterFaceScreenProps = {}) {
   const cameraRef = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
 
@@ -108,7 +112,14 @@ export default function RegisterFaceScreen() {
     if (!detection || !previewUri) return;
     Alert.alert(
       'Ready for ArcFace',
-      'The 5 landmark points and canonical crop will now be sent to ArcFace.'
+      'The 5 landmark points and canonical crop will now be sent to ArcFace.',
+      [
+        {
+          text: 'View Result',
+          onPress: () => onNavigate?.('Result'),
+        },
+        { text: 'OK' },
+      ]
     );
   };
 

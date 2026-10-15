@@ -197,8 +197,8 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({ onNaviga
           <Text style={styles.successMark}>✓</Text>
           <Text style={styles.resultTitle}>Liveness actions complete</Text>
           <Text style={styles.body}>All three requested actions were detected.</Text>
-          <TouchableOpacity style={styles.primaryButton} onPress={() => onNavigate?.('Result')}>
-            <Text style={styles.primaryButtonText}>Continue to verification</Text>
+          <TouchableOpacity style={styles.primaryButton} onPress={() => onNavigate?.('RegisterFace')}>
+            <Text style={styles.primaryButtonText}>Continue to next step</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.secondaryButton} onPress={restart}>
             <Text style={styles.secondaryButtonText}>Run again</Text>
