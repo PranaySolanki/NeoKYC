@@ -5,8 +5,9 @@ import {
   HomeScreen,
   DocumentScanScreen,
   FaceLivenessScreen,
-  ResultScreen
+  ResultScreen,
 } from './src/screens';
+import RegisterFaceScreen from './src/screens/RetinaFace+ArcFace/RegisterFaceScreen';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<string>('Home');
@@ -19,6 +20,8 @@ export default function App() {
         return <FaceLivenessScreen onNavigate={setCurrentScreen} />;
       case 'Result':
         return <ResultScreen />;
+      case 'RegisterFace':
+        return <RegisterFaceScreen />;
       case 'Home':
       default:
         return <HomeScreen onNavigate={setCurrentScreen} />;
