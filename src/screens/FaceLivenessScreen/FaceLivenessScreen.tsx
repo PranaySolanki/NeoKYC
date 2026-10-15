@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   StyleSheet,
@@ -6,9 +6,14 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
-import type { Camera as VisionCamera } from 'react-native-vision-camera';
-import { Camera, Face } from 'react-native-vision-camera-face-detector';
+import {
+  Camera,
+  useCameraDevice,
+  useCameraPermission,
+  useFrameProcessor,
+} from 'react-native-vision-camera';
+import { useFaceDetector, Face } from 'react-native-vision-camera-face-detector';
+import { Worklets } from 'react-native-worklets-core';
 
 type Challenge = 'movement' | 'blink' | 'smile';
 
@@ -43,7 +48,7 @@ interface FaceLivenessScreenProps {
 export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({ onNavigate }) => {
   const device = useCameraDevice('front');
   const { hasPermission, requestPermission } = useCameraPermission();
-  const cameraRef = useRef<VisionCamera>(null);
+  const cameraRef = useRef<Camera>(null);
   const [challenges, setChallenges] = useState<Challenge[]>(shuffledChallenges);
   const [challengeIndex, setChallengeIndex] = useState(0);
   const [completed, setCompleted] = useState(false);
@@ -89,13 +94,45 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({ onNaviga
 
     if (passed) {
       smileFrames.current = 0;
-      if (challengeIndex + 1 >= challenges.length) {
-        setCompleted(true);
-      } else {
-        setChallengeIndex((index) => index + 1);
-      }
+      movementDetected.current = false;
+      blinkState.current = 'waiting-open';
+      setChallengeIndex((prevIndex) => {
+        if (prevIndex + 1 >= challenges.length) {
+          setCompleted(true);
+          return prevIndex;
+        }
+        return prevIndex + 1;
+      });
     }
-  }, [challenge, challengeIndex, challenges.length, completed]);
+  }, [challenge, challenges.length, completed]);
+
+  const faceDetectionOptions = useMemo(() => ({
+    performanceMode: 'fast' as const,
+    classificationMode: 'all' as const,
+    landmarkMode: 'none' as const,
+    contourMode: 'none' as const,
+    minFaceSize: 0.15,
+    trackingEnabled: true,
+  }), []);
+
+  const { detectFaces } = useFaceDetector(faceDetectionOptions);
+
+  const onFacesDetectedOnJS = useMemo(
+    () =>
+      Worklets.createRunOnJS((faces: Face[]) => {
+        handleFacesDetection(faces);
+      }),
+    [handleFacesDetection]
+  );
+
+  const frameProcessor = useFrameProcessor(
+    (frame) => {
+      'worklet';
+      const faces = detectFaces(frame);
+      onFacesDetectedOnJS(faces);
+    },
+    [detectFaces, onFacesDetectedOnJS]
+  );
 
   const restart = () => {
     // A new randomized order prevents the same gesture order on every attempt.
@@ -146,16 +183,8 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({ onNaviga
           style={StyleSheet.absoluteFill}
           device={device}
           isActive={!completed}
-          faceDetectionCallback={handleFacesDetection}
-          faceDetectionOptions={{
-            cameraFacing: 'front',
-            performanceMode: 'fast',
-            classificationMode: 'all',
-            landmarkMode: 'none',
-            contourMode: 'none',
-            minFaceSize: 0.15,
-            trackingEnabled: true,
-          }}
+          frameProcessor={frameProcessor}
+          pixelFormat="yuv"
         />
         <View pointerEvents="none" style={styles.faceGuide} />
         <View pointerEvents="none" style={styles.cameraStatus}>
@@ -183,8 +212,8 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({ onNaviga
             ))}
             <Text style={styles.progressText}>{challengeIndex + 1} of {challenges.length}</Text>
           </View>
-          <Text style={styles.challengeTitle}>{CHALLENGE_COPY[challenge].title}</Text>
-          <Text style={styles.body}>{CHALLENGE_COPY[challenge].instruction}</Text>
+          <Text style={styles.challengeTitle}>{CHALLENGE_COPY[challenge]?.title ?? ''}</Text>
+          <Text style={styles.body}>{CHALLENGE_COPY[challenge]?.instruction ?? ''}</Text>
           <Text style={styles.privacyNote}>Face signals are processed on this device and are not saved by this screen.</Text>
         </View>
       )}
