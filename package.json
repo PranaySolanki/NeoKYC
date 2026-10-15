@@ -9,15 +9,27 @@
     "web": "expo start --web"
   },
   "dependencies": {
-    "expo": "~54.0.35",
+    "@infinitered/react-native-mlkit-text-recognition": "^5.0.1",
+    "expo": "~54.0.37",
+    "expo-camera": "~17.0.10",
     "expo-status-bar": "~3.0.9",
     "react": "19.1.0",
-    "react-native": "0.81.5",
+    "react-native": "^0.81.5",
     "react-native-safe-area-context": "~5.6.0"
   },
   "devDependencies": {
     "@types/react": "~19.1.0",
     "typescript": "~5.9.2"
+  },
+  "overrides": {
+    "expo-image": "~3.0.11"
+  },
+  "expo": {
+    "autolinking": {
+      "exclude": [
+        "expo-image"
+      ]
+    }
   },
   "private": true
 }

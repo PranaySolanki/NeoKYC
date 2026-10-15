@@ -7,18 +7,30 @@ import {
   FaceLivenessScreen,
   ResultScreen
 } from './src/screens';
+import { RppgResult } from './src/services/rppgService';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<string>('Home');
+  const [livenessResult, setLivenessResult] = useState<RppgResult | null>(null);
 
   const renderScreen = () => {
     switch (currentScreen) {
       case 'DocumentScan':
-        return <DocumentScanScreen />;
+        return <DocumentScanScreen onNavigate={setCurrentScreen} />;
       case 'FaceLiveness':
-        return <FaceLivenessScreen />;
+        return (
+          <FaceLivenessScreen
+            onNavigate={setCurrentScreen}
+            onComplete={setLivenessResult}
+          />
+        );
       case 'Result':
-        return <ResultScreen />;
+        return (
+          <ResultScreen
+            livenessResult={livenessResult}
+            onNavigate={setCurrentScreen}
+          />
+        );
       case 'Home':
       default:
         return <HomeScreen onNavigate={setCurrentScreen} />;
@@ -26,23 +38,25 @@ export default function App() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" />
+    <SafeAreaProvider>
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="light-content" />
 
-      {/* Render Back Button on secondary screens */}
-      {currentScreen !== 'Home' && (
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => setCurrentScreen('Home')}
-        >
-          <Text style={styles.backButtonText}>← Back to Home</Text>
-        </TouchableOpacity>
-      )}
+        {/* Render Back Button on secondary screens */}
+        {currentScreen !== 'Home' && (
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={() => setCurrentScreen('Home')}
+          >
+            <Text style={styles.backButtonText}>← Back to Home</Text>
+          </TouchableOpacity>
+        )}
 
-      <View style={styles.content}>
-        {renderScreen()}
-      </View>
-    </SafeAreaView>
+        <View style={styles.content}>
+          {renderScreen()}
+        </View>
+      </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 
