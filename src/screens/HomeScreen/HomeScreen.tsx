@@ -30,17 +30,17 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onNavigate }) => {
           <Text style={styles.buttonText}>2. Liveness Check Screen</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity 
+        {/* <TouchableOpacity 
           style={[styles.button, styles.accentButton]} 
           onPress={() => onNavigate('Result')}
-        >
-          <Text style={styles.buttonText}>3. Verification Result Screen</Text>
-        </TouchableOpacity>
+        > */}
+          {/* <Text style={styles.buttonText}>3. Verification Result Screen</Text>
+        </TouchableOpacity> */}
         <TouchableOpacity 
           style={[styles.button, styles.accentButton]} 
-          onPress={() => onNavigate('RegisterFace')}
+          onPress={() => onNavigate('FaceMatchingHub')}
         >
-          <Text style={styles.buttonText}>4. Register Face Screen</Text>
+          <Text style={styles.buttonText}>3. Face Matching</Text>
         </TouchableOpacity>
       </View>
     </View>

@@ -1,248 +1,310 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   StyleSheet,
+  View,
   Text,
   TouchableOpacity,
-  View,
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  Image,
 } from 'react-native';
-import {
-  Camera,
-  useCameraDevice,
-  useCameraPermission,
-  useFrameProcessor,
-} from 'react-native-vision-camera';
-import { useFaceDetector, Face } from 'react-native-vision-camera-face-detector';
-import { Worklets } from 'react-native-worklets-core';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import { useModels } from '../../assets/models/ModelContext';
+import { parseRetinaFaceOutputs, FaceDetection } from '../RetinaFace+ArcFace/utils/RetinaFace/retinafaceParser';
+import { preprocessPhotoForRetinaFace } from '../RetinaFace+ArcFace/utils/RetinaFace/imagePreprocess';
+import { preprocessFaceForArcFace } from '../RetinaFace+ArcFace/utils/ArcFace/arcfacePreprocess';
+import { matchLiveEmbedding } from '../../utils/storage';
 
-type Challenge = 'movement' | 'blink' | 'smile';
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const SQUARE_SIZE = SCREEN_WIDTH * 0.85;
 
-const CHALLENGE_COPY: Record<Challenge, { title: string; instruction: string }> = {
-  movement: {
-    title: 'Head movement',
-    instruction: 'Slowly turn your head to either side, then face the camera again.',
-  },
-  blink: {
-    title: 'Eye blink',
-    instruction: 'Blink once, then open your eyes and look at the camera.',
-  },
-  smile: {
-    title: 'Smile',
-    instruction: 'Give the camera a natural smile and hold it briefly.',
-  },
-};
-
-const shuffledChallenges = (): Challenge[] => {
-  const items: Challenge[] = ['movement', 'blink', 'smile'];
-  for (let i = items.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [items[i], items[j]] = [items[j], items[i]];
-  }
-  return items;
-};
-
-interface FaceLivenessScreenProps {
+interface VerifyFaceScreenProps {
   onNavigate?: (screenName: string) => void;
 }
 
-export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({ onNavigate }) => {
-  const device = useCameraDevice('front');
-  const { hasPermission, requestPermission } = useCameraPermission();
-  const cameraRef = useRef<Camera>(null);
-  const [challenges, setChallenges] = useState<Challenge[]>(shuffledChallenges);
-  const [challengeIndex, setChallengeIndex] = useState(0);
-  const [completed, setCompleted] = useState(false);
-  const [faceMessage, setFaceMessage] = useState('Center your face in the frame');
-  const [permissionRequested, setPermissionRequested] = useState(false);
-  const blinkState = useRef<'waiting-open' | 'waiting-close' | 'waiting-reopen'>('waiting-open');
-  const smileFrames = useRef(0);
-  const movementDetected = useRef(false);
-  const lastUiUpdate = useRef(0);
+export default function VerifyFaceScreen({ onNavigate }: VerifyFaceScreenProps) {
+  const cameraRef = useRef<CameraView>(null);
+  const [permission, requestPermission] = useCameraPermissions();
 
-  const challenge = challenges[challengeIndex];
+  // Instant preloaded models from root provider
+  const { retinaModel, arcfaceModel } = useModels();
 
-  const handleFacesDetection = useCallback((faces: Face[]) => {
-    const now = Date.now();
-    if (now - lastUiUpdate.current > 250) {
-      lastUiUpdate.current = now;
-      if (faces.length === 0) setFaceMessage('No face detected. Move into the frame.');
-      else if (faces.length > 1) setFaceMessage('Only one person should be visible.');
-      else setFaceMessage('Face detected. Follow the prompt below.');
+  const [status, setStatus] = useState<string>('Look into camera to verify identity');
+  const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [previewUri, setPreviewUri] = useState<string | null>(null);
+  const [detection, setDetection] = useState<FaceDetection | null>(null);
+  const [matchedName, setMatchedName] = useState<string | null>(null);
+  const [similarityScore, setSimilarityScore] = useState<number>(0);
+
+  const handleVerify = async () => {
+    if (isProcessing || !cameraRef.current) return;
+
+    if (!retinaModel || !arcfaceModel) {
+      Alert.alert('Initializing', 'Models are not ready.');
+      return;
     }
 
-    if (completed || faces.length !== 1 || !challenge) return;
-    const face = faces[0];
-    let passed = false;
+    try {
+      setIsProcessing(true);
+      setStatus('Capturing frame...');
 
-    if (challenge === 'movement') {
-      if (Math.abs(face.yawAngle) >= 18) movementDetected.current = true;
-      passed = movementDetected.current && Math.abs(face.yawAngle) <= 10;
-    } else if (challenge === 'blink') {
-      const openProbability = Math.min(face.leftEyeOpenProbability, face.rightEyeOpenProbability);
-      if (openProbability >= 0.7 && blinkState.current === 'waiting-open') {
-        blinkState.current = 'waiting-close';
-      } else if (openProbability <= 0.25 && blinkState.current === 'waiting-close') {
-        blinkState.current = 'waiting-reopen';
-      } else if (openProbability >= 0.7 && blinkState.current === 'waiting-reopen') {
-        passed = true;
-        blinkState.current = 'waiting-open';
-      }
-    } else if (challenge === 'smile') {
-      smileFrames.current = face.smilingProbability >= 0.7 ? smileFrames.current + 1 : 0;
-      passed = smileFrames.current >= 4;
-    }
-
-    if (passed) {
-      smileFrames.current = 0;
-      movementDetected.current = false;
-      blinkState.current = 'waiting-open';
-      setChallengeIndex((prevIndex) => {
-        if (prevIndex + 1 >= challenges.length) {
-          setCompleted(true);
-          return prevIndex;
-        }
-        return prevIndex + 1;
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.9,
+        skipProcessing: false,
       });
+
+      if (!photo?.uri) throw new Error('Failed to capture frame from camera.');
+
+      setStatus('Running RetinaFace detection...');
+      const { tensor: retinaTensor, croppedUri } = await preprocessPhotoForRetinaFace(
+        photo.uri,
+        photo.width,
+        photo.height
+      );
+      setPreviewUri(croppedUri);
+
+      const retinaOutputs = await retinaModel.run([retinaTensor.buffer as ArrayBuffer]);
+      const result = parseRetinaFaceOutputs(
+        new Float32Array(retinaOutputs[0]),
+        new Float32Array(retinaOutputs[1]),
+        new Float32Array(retinaOutputs[2]),
+        0.45
+      );
+
+      if (!result) {
+        setDetection(null);
+        setStatus('No face detected. Please try again.');
+        return;
+      }
+
+      setDetection(result);
+
+      setStatus('Extracting signature (ArcFace)...');
+      const { tensor: arcTensor } = await preprocessFaceForArcFace(
+        croppedUri,
+        SQUARE_SIZE,
+        result
+      );
+
+      const arcOutputs = await arcfaceModel.run([arcTensor.buffer as ArrayBuffer]);
+      const liveEmbedding = new Float32Array(arcOutputs[0]);
+
+      setStatus('Comparing with registered faces...');
+      const match = await matchLiveEmbedding(liveEmbedding, 0.50);
+
+      setSimilarityScore(match.similarity);
+      if (match.matchedUser) {
+        setMatchedName(match.matchedUser);
+        setStatus(`Match Found: ${match.matchedUser}`);
+      } else {
+        setMatchedName(null);
+        setStatus('Face not recognized in local records');
+      }
+    } catch (err: unknown) {
+      Alert.alert('Verification Error', err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsProcessing(false);
     }
-  }, [challenge, challenges.length, completed]);
-
-  const faceDetectionOptions = useMemo(() => ({
-    performanceMode: 'fast' as const,
-    classificationMode: 'all' as const,
-    landmarkMode: 'none' as const,
-    contourMode: 'none' as const,
-    minFaceSize: 0.15,
-    trackingEnabled: true,
-  }), []);
-
-  const { detectFaces } = useFaceDetector(faceDetectionOptions);
-
-  const onFacesDetectedOnJS = useMemo(
-    () =>
-      Worklets.createRunOnJS((faces: Face[]) => {
-        handleFacesDetection(faces);
-      }),
-    [handleFacesDetection]
-  );
-
-  const frameProcessor = useFrameProcessor(
-    (frame) => {
-      'worklet';
-      const faces = detectFaces(frame);
-      onFacesDetectedOnJS(faces);
-    },
-    [detectFaces, onFacesDetectedOnJS]
-  );
-
-  const restart = () => {
-    // A new randomized order prevents the same gesture order on every attempt.
-    setChallenges(shuffledChallenges());
-    setChallengeIndex(0);
-    setCompleted(false);
-    setFaceMessage('Center your face in the frame');
-    blinkState.current = 'waiting-open';
-    smileFrames.current = 0;
-    movementDetected.current = false;
   };
 
-  if (!hasPermission) {
+  const handleReset = () => {
+    setPreviewUri(null);
+    setDetection(null);
+    setMatchedName(null);
+    setSimilarityScore(0);
+    setStatus('Look into camera to verify identity');
+  };
+
+  const renderDetectionOverlay = () => {
+    if (!detection) return null;
+
+    const boxW = (detection.box.x2 - detection.box.x1) * SQUARE_SIZE;
+    const boxH = (detection.box.y2 - detection.box.y1) * SQUARE_SIZE;
+    const boxLeft = detection.box.x1 * SQUARE_SIZE;
+    const boxTop = detection.box.y1 * SQUARE_SIZE;
+
+    const mapLandmark = (pt: [number, number]) => ({
+      left: pt[0] * SQUARE_SIZE - 5,
+      top: pt[1] * SQUARE_SIZE - 5,
+    });
+
+    const isMatch = Boolean(matchedName);
+    const boxColor = isMatch ? '#00FF00' : '#FF5252';
+
     return (
-      <View style={styles.center}>
-        <Text style={styles.title}>Camera access needed</Text>
-        <Text style={styles.body}>NeoKYC uses the front camera to check the requested face movements.</Text>
-        <TouchableOpacity
-          style={styles.primaryButton}
-          onPress={async () => {
-            setPermissionRequested(true);
-            await requestPermission();
-          }}
-        >
-          <Text style={styles.primaryButtonText}>{permissionRequested ? 'Allow camera access in Settings' : 'Allow camera access'}</Text>
-        </TouchableOpacity>
+      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+        <View
+          style={[
+            styles.detectionBox,
+            {
+              left: boxLeft,
+              top: boxTop,
+              width: boxW,
+              height: boxH,
+              borderColor: boxColor,
+              backgroundColor: isMatch ? 'rgba(0, 255, 0, 0.12)' : 'rgba(255, 82, 82, 0.12)',
+            },
+          ]}
+        />
+        <View style={[styles.landmarkPoint, { left: mapLandmark(detection.landmarks.leftEye).left, top: mapLandmark(detection.landmarks.leftEye).top, backgroundColor: boxColor }]} />
+        <View style={[styles.landmarkPoint, { left: mapLandmark(detection.landmarks.rightEye).left, top: mapLandmark(detection.landmarks.rightEye).top, backgroundColor: boxColor }]} />
+        <View style={[styles.landmarkPoint, { left: mapLandmark(detection.landmarks.nose).left, top: mapLandmark(detection.landmarks.nose).top, backgroundColor: '#00E5FF' }]} />
+        <View style={[styles.landmarkPoint, { left: mapLandmark(detection.landmarks.mouthLeft).left, top: mapLandmark(detection.landmarks.mouthLeft).top, backgroundColor: '#FF0055' }]} />
+        <View style={[styles.landmarkPoint, { left: mapLandmark(detection.landmarks.mouthRight).left, top: mapLandmark(detection.landmarks.mouthRight).top, backgroundColor: '#FF0055' }]} />
       </View>
     );
-  }
+  };
 
-  if (!device) {
+  if (!permission?.granted) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator color="#38BDF8" />
-        <Text style={styles.body}>Finding the front camera…</Text>
+      <View style={styles.centerContainer}>
+        <Text style={styles.infoText}>Camera permission is required.</Text>
+        <TouchableOpacity style={styles.btnPrimary} onPress={requestPermission}>
+          <Text style={styles.btnPrimaryText}>Grant Permission</Text>
+        </TouchableOpacity>
       </View>
     );
   }
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Liveness check</Text>
-      <Text style={styles.subtitle}>Complete all three live actions to continue.</Text>
+      <Text style={styles.title}>Verify Face</Text>
 
-      <View style={styles.cameraFrame}>
-        <Camera
-          ref={cameraRef}
-          style={StyleSheet.absoluteFill}
-          device={device}
-          isActive={!completed}
-          frameProcessor={frameProcessor}
-          pixelFormat="yuv"
-        />
-        <View pointerEvents="none" style={styles.faceGuide} />
-        <View pointerEvents="none" style={styles.cameraStatus}>
-          <Text style={styles.cameraStatusText}>{faceMessage}</Text>
+      <View style={styles.viewport}>
+        <View style={styles.squareFrame}>
+          {previewUri ? (
+            <Image source={{ uri: previewUri }} style={styles.previewImage} resizeMode="cover" />
+          ) : (
+            <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="front" />
+          )}
+          {renderDetectionOverlay()}
         </View>
+
+        {previewUri && (
+          <View style={[styles.resultCard, matchedName ? styles.matchBorder : styles.failBorder]}>
+            <Text style={styles.resultTitle}>
+              {matchedName ? `Welcome, ${matchedName}!` : 'Unrecognized Face'}
+            </Text>
+            <Text style={styles.resultSubtitle}>
+              Similarity: {(similarityScore * 100).toFixed(1)}% (Threshold: 50.0%)
+            </Text>
+          </View>
+        )}
+
+        <Text style={styles.statusBadge}>{status}</Text>
       </View>
 
-      {completed ? (
-        <View style={styles.resultCard}>
-          <Text style={styles.successMark}>✓</Text>
-          <Text style={styles.resultTitle}>Liveness actions complete</Text>
-          <Text style={styles.body}>All three requested actions were detected.</Text>
-          <TouchableOpacity style={styles.primaryButton} onPress={() => onNavigate?.('RegisterFace')}>
-            <Text style={styles.primaryButtonText}>Continue to next step</Text>
+      <View style={styles.controls}>
+        {!previewUri ? (
+          <TouchableOpacity
+            style={[styles.captureBtn, isProcessing && styles.btnDisabled]}
+            onPress={handleVerify}
+            disabled={isProcessing}
+          >
+            {isProcessing ? <ActivityIndicator color="#000" /> : <View style={styles.innerCircle} />}
           </TouchableOpacity>
-          <TouchableOpacity style={styles.secondaryButton} onPress={restart}>
-            <Text style={styles.secondaryButtonText}>Run again</Text>
-          </TouchableOpacity>
-        </View>
-      ) : (
-        <View style={styles.challengeCard}>
-          <View style={styles.progressRow}>
-            {challenges.map((item, index) => (
-              <View key={item} style={[styles.progressDot, index <= challengeIndex && styles.progressDotActive]} />
-            ))}
-            <Text style={styles.progressText}>{challengeIndex + 1} of {challenges.length}</Text>
+        ) : (
+          <View style={styles.actionRow}>
+            <TouchableOpacity style={styles.btnSecondary} onPress={handleReset}>
+              <Text style={styles.btnSecondaryText}>Scan Again</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.btnDone}
+              onPress={() => onNavigate?.('FaceMatchingHub')}
+            >
+              <Text style={styles.btnDoneText}>Done</Text>
+            </TouchableOpacity>
           </View>
-          <Text style={styles.challengeTitle}>{CHALLENGE_COPY[challenge]?.title ?? ''}</Text>
-          <Text style={styles.body}>{CHALLENGE_COPY[challenge]?.instruction ?? ''}</Text>
-          <Text style={styles.privacyNote}>Face signals are processed on this device and are not saved by this screen.</Text>
-        </View>
-      )}
+        )}
+      </View>
     </View>
   );
-};
+}
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0F172A', paddingHorizontal: 20, paddingTop: 68, paddingBottom: 24 },
-  center: { flex: 1, backgroundColor: '#0F172A', alignItems: 'center', justifyContent: 'center', padding: 28 },
-  title: { color: '#F8FAFC', fontSize: 23, fontWeight: '800', marginBottom: 6 },
-  subtitle: { color: '#94A3B8', fontSize: 14, lineHeight: 20, marginBottom: 18 },
-  body: { color: '#CBD5E1', fontSize: 14, lineHeight: 21 },
-  cameraFrame: { width: '100%', height: 350, borderRadius: 20, overflow: 'hidden', backgroundColor: '#020617', borderWidth: 1, borderColor: '#334155' },
-  faceGuide: { position: 'absolute', width: 220, height: 290, alignSelf: 'center', top: 30, borderWidth: 2, borderColor: 'rgba(56, 189, 248, 0.9)', borderRadius: 120 },
-  cameraStatus: { position: 'absolute', left: 14, right: 14, bottom: 14, paddingVertical: 8, paddingHorizontal: 12, backgroundColor: 'rgba(15,23,42,0.8)', borderRadius: 10, alignItems: 'center' },
-  cameraStatusText: { color: '#E2E8F0', fontSize: 12, fontWeight: '600', textAlign: 'center' },
-  challengeCard: { marginTop: 18, padding: 18, borderRadius: 16, backgroundColor: '#1E293B', borderWidth: 1, borderColor: '#334155' },
-  progressRow: { flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 16 },
-  progressDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: '#475569' },
-  progressDotActive: { backgroundColor: '#38BDF8' },
-  progressText: { color: '#94A3B8', fontSize: 12, fontWeight: '700', marginLeft: 'auto' },
-  challengeTitle: { color: '#38BDF8', fontSize: 17, fontWeight: '800', marginBottom: 6 },
-  privacyNote: { color: '#64748B', fontSize: 11, lineHeight: 16, marginTop: 14 },
-  resultCard: { marginTop: 18, padding: 18, borderRadius: 16, backgroundColor: '#1E293B', borderWidth: 1, borderColor: '#0D9488', alignItems: 'center' },
-  successMark: { color: '#2DD4BF', fontSize: 32, fontWeight: '900', marginBottom: 4 },
-  resultTitle: { color: '#F8FAFC', fontSize: 17, fontWeight: '800', marginBottom: 4 },
-  primaryButton: { alignSelf: 'stretch', alignItems: 'center', backgroundColor: '#0284C7', paddingVertical: 13, paddingHorizontal: 18, borderRadius: 11, marginTop: 16 },
-  primaryButtonText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800', textAlign: 'center' },
-  secondaryButton: { padding: 12, marginTop: 2 },
-  secondaryButtonText: { color: '#94A3B8', fontSize: 13, fontWeight: '700' },
+  container: { flex: 1, backgroundColor: '#121212', justifyContent: 'space-between', paddingVertical: 40, alignItems: 'center' },
+  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#121212' },
+  infoText: { color: '#FFF', fontSize: 16, marginBottom: 12 },
+  title: { color: '#FFF', fontSize: 22, fontWeight: '700' },
+  viewport: { alignItems: 'center' },
+  squareFrame: {
+    width: SQUARE_SIZE,
+    height: SQUARE_SIZE,
+    borderRadius: 16,
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: '#333',
+    backgroundColor: '#000',
+    position: 'relative',
+  },
+  previewImage: { width: '100%', height: '100%' },
+  detectionBox: {
+    position: 'absolute',
+    borderWidth: 2.5,
+    borderRadius: 8,
+  },
+  landmarkPoint: {
+    position: 'absolute',
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    borderWidth: 1.5,
+    borderColor: '#FFF',
+  },
+  resultCard: {
+    marginTop: 14,
+    width: SQUARE_SIZE,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: '#1E1E1E',
+    borderWidth: 1.5,
+    alignItems: 'center',
+  },
+  matchBorder: { borderColor: '#00E676' },
+  failBorder: { borderColor: '#FF5252' },
+  resultTitle: { color: '#FFF', fontSize: 18, fontWeight: '700' },
+  resultSubtitle: { color: '#AAA', fontSize: 13, marginTop: 4 },
+  statusBadge: {
+    color: '#DDD',
+    fontSize: 13,
+    marginTop: 10,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    textAlign: 'center',
+  },
+  controls: { alignItems: 'center' },
+  captureBtn: {
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+    borderWidth: 4,
+    borderColor: '#FFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  innerCircle: { width: 58, height: 58, borderRadius: 29, backgroundColor: '#FFF' },
+  btnDisabled: { opacity: 0.5 },
+  btnPrimary: { backgroundColor: '#0A84FF', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 },
+  btnPrimaryText: { color: '#FFF', fontWeight: 'bold' },
+  actionRow: { flexDirection: 'row', width: SQUARE_SIZE, gap: 12 },
+  btnSecondary: {
+    flex: 1,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  btnSecondaryText: { color: '#FFF', fontSize: 16, fontWeight: '600' },
+  btnDone: {
+    flex: 1,
+    backgroundColor: '#0A84FF',
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  btnDoneText: { color: '#FFF', fontSize: 16, fontWeight: '700' },
 });
