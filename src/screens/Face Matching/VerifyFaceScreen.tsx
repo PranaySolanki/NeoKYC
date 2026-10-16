@@ -23,7 +23,7 @@ interface VerifyFaceScreenProps {
   onNavigate?: (screenName: string) => void;
 }
 
-export default function VerifyFaceScreen({ onNavigate }: VerifyFaceScreenProps) {
+export function VerifyFaceScreen({ onNavigate }: VerifyFaceScreenProps) {
   const cameraRef = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
 
@@ -336,3 +336,5 @@ const styles = StyleSheet.create({
   },
   btnDoneText: { color: '#FFF', fontSize: 16, fontWeight: '700' },
 });
+
+export default VerifyFaceScreen;

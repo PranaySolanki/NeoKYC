@@ -27,7 +27,7 @@ interface RegisterFaceScreenProps {
   onNavigate?: (screenName: string) => void;
 }
 
-export default function RegisterFaceScreen({ onNavigate }: RegisterFaceScreenProps) {
+export function RegisterFaceScreen({ onNavigate }: RegisterFaceScreenProps) {
   const cameraRef = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
 
@@ -392,3 +392,5 @@ const styles = StyleSheet.create({
   btnPrimary: { backgroundColor: '#0A84FF', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 },
   btnPrimaryText: { color: '#FFF', fontWeight: 'bold' },
 });
+
+export default RegisterFaceScreen;

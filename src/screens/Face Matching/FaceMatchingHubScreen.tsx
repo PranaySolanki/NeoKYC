@@ -6,7 +6,7 @@ interface FaceMatchingHubScreenProps {
   onNavigate?: (screenName: string) => void;
 }
 
-export default function FaceMatchingHubScreen({ onNavigate }: FaceMatchingHubScreenProps) {
+export function FaceMatchingHubScreen({ onNavigate }: FaceMatchingHubScreenProps) {
   const [recordCount, setRecordCount] = useState<number>(0);
 
   const refreshCount = async () => {
@@ -151,3 +151,5 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
 });
+
+export default FaceMatchingHubScreen;

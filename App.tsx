@@ -1,28 +1,55 @@
 import React, { useState } from 'react';
-import { StyleSheet, StatusBar } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { StyleSheet, SafeAreaView, StatusBar } from 'react-native';
+import { ModelProvider } from './src/assets/models/ModelContext';
 import {
   HomeScreen,
+  DocumentScanScreen,
+  FaceLivenessScreen,
+  ResultScreen,
+  FaceMatchingHubScreen,
+  RegisterFaceScreen,
+  VerifyFaceScreen,
 } from './src/screens';
-import RegisterFaceScreen from './src/screens/RetinaFace+ArcFace/RegisterFaceScreen';
-import FaceMatchingHubScreen from './src/screens/Face Matching/FaceMatchingHubScreen';
-import VerifyFaceScreen from './src/screens/Face Matching/VerifyFaceScreen';
-import { ModelProvider } from './src/assets/models/ModelContext';
 
-export type ScreenName = 'Home' | 'FaceMatchingHub' | 'RegisterFace' | 'VerifyFace';
+export type ScreenName =
+  | 'Home'
+  | 'DocumentScan'
+  | 'FaceLiveness'
+  | 'Result'
+  | 'FaceMatchingHub'
+  | 'RegisterFace'
+  | 'VerifyFace';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<ScreenName>('Home');
+  const [routeParams, setRouteParams] = useState<Record<string, unknown>>({});
 
-  const navigateTo = (screen: string) => {
+  const navigateTo = (screen: string, params?: Record<string, unknown>) => {
+    if (params) {
+      setRouteParams(params);
+    }
     setCurrentScreen(screen as ScreenName);
   };
 
   const renderCurrentScreen = () => {
     switch (currentScreen) {
+      // 1. Main Home Screen
       case 'Home':
         return <HomeScreen onNavigate={navigateTo} />;
 
+      // 2. ID / Document Scanning Flow
+      case 'DocumentScan':
+        return <DocumentScanScreen onNavigate={navigateTo} />;
+
+      // 3. Face Liveness Flow (Passes down any OCR/Document data from Step 2)
+      case 'FaceLiveness':
+        return <FaceLivenessScreen onNavigate={navigateTo} />;
+
+      // 4. Verification / Results Screen
+      // case 'Result':
+      //   return <ResultScreen onNavigate={navigateTo} routeParams={routeParams} />;
+
+      // 5. Offline Biometrics Hub
       case 'FaceMatchingHub':
         return <FaceMatchingHubScreen onNavigate={navigateTo} />;
 

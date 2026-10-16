@@ -274,7 +274,18 @@ export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({ onNaviga
 
   return (
     <ScrollView contentContainerStyle={styles.scrollContainer}>
-      <Text style={styles.title}>Document Verification</Text>
+      {/* Top Header with Back Button */}
+      <View style={styles.headerBar}>
+        <TouchableOpacity
+          style={styles.backButton}
+          onPress={() => onNavigate?.('Home')}
+          disabled={isProcessing}
+        >
+          <Text style={styles.backButtonText}>← Back</Text>
+        </TouchableOpacity>
+        <Text style={styles.title}>Document Verification</Text>
+        <View style={styles.headerSpacer} />
+      </View>
       <Text
         style={[
           styles.subtitle,
@@ -496,11 +507,34 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 20,
   },
+  headerBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    marginBottom: 8,
+  },
+  backButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  backButtonText: {
+    color: '#38BDF8',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  headerSpacer: {
+    width: 60,
+  },
   title: {
     color: '#F8FAFC',
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '700',
-    marginBottom: 6,
+    textAlign: 'center',
   },
   subtitle: {
     color: '#94A3B8',
