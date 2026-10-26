@@ -157,6 +157,7 @@ dependencies {
 
     // Google MediaPipe Tasks Vision for on-device face landmark tracking
     implementation("com.google.mediapipe:tasks-vision:0.10.14")
+    testImplementation("junit:junit:4.13.2")
 
     def isGifEnabled = (findProperty('expo.gif.enabled') ?: "") == "true";
     def isWebpEnabled = (findProperty('expo.webp.enabled') ?: "") == "true";

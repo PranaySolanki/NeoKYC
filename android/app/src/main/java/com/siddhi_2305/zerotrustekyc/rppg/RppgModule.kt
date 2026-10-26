@@ -32,8 +32,11 @@ class RppgModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaMo
 
                 val map = Arguments.createMap().apply {
                     putBoolean("success", result.success)
-                    putString("verdictTier", result.verdictTier)
                     putString("status", result.status)
+                    putString("verdict", result.verdict)
+                    putString("verdictTitle", result.verdictTitle)
+                    putString("verdictDescription", result.verdictDescription)
+                    putString("spoofReason", result.spoofReason ?: "")
                     putDouble("estimatedBpm", result.estimatedBpm)
                     putString("signalQuality", result.signalQuality)
                     putInt("usableFrames", result.usableFrames)

@@ -23,9 +23,11 @@ interface FaceLivenessScreenProps {
 }
 
 const PREP_COUNTDOWN_SECONDS = 3;
-const CHALLENGE_DURATION_SECONDS = 5;
-const NUM_CHALLENGES = 6;
-const TOTAL_RECORDING_SECONDS = CHALLENGE_DURATION_SECONDS * NUM_CHALLENGES; // 30 seconds
+const TOTAL_RECORDING_SECONDS = 15;
+const CHALLENGE_ACTION_SECONDS = 2;
+const INITIAL_CENTER_SECONDS = 3;
+const FINAL_STILL_SECONDS = 8;
+const NUM_CHALLENGES = 4;
 
 interface ActionDefinition {
   type: ChallengeType;
@@ -79,27 +81,30 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({
   const [challenges, setChallenges] = useState<LivenessChallenge[]>([]);
   const [result, setResult] = useState<RppgResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [analysisStatusText, setAnalysisStatusText] = useState<string>('Initializing analysis...');
+  const analysisStatusText = 'Processing the recording on this device.';
 
   const cameraRef = useRef<CameraView>(null);
-  const isRecordingRef = useRef<boolean>(false);
+  const scanInFlightRef = useRef<boolean>(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const analysisTickerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
-      if (analysisTickerRef.current) clearInterval(analysisTickerRef.current);
     };
   }, []);
 
   /**
-   * Generates a randomized sequence of challenges without consecutive duplicates.
+   * Generates two randomized gestures between a brief setup and the still pulse window.
    */
   const generateChallenges = (): LivenessChallenge[] => {
-    // Shuffle available dynamic actions
-    const shuffled = [...AVAILABLE_ACTIONS].sort(() => Math.random() - 0.5);
-    const selectedMidActions = shuffled.slice(0, 4);
+    // Fisher-Yates gives each action an unbiased position before selecting two.
+    const shuffled = [...AVAILABLE_ACTIONS];
+    for (let i = shuffled.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    // Two brief gestures leave a continuous eight-second still interval for rPPG.
+    const selectedMidActions = shuffled.slice(0, 2);
 
     const fullSequence: ActionDefinition[] = [
       {
@@ -117,13 +122,23 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({
       },
     ];
 
-    return fullSequence.map((action, idx) => ({
-      id: `challenge_${idx + 1}_${action.type.toLowerCase()}`,
-      type: action.type,
-      instruction: action.instruction,
-      startTimeSec: idx * CHALLENGE_DURATION_SECONDS,
-      endTimeSec: (idx + 1) * CHALLENGE_DURATION_SECONDS,
-    }));
+    let startTimeSec = 0;
+    return fullSequence.map((action, idx) => {
+      const duration = idx === 0
+        ? INITIAL_CENTER_SECONDS
+        : idx === fullSequence.length - 1
+          ? FINAL_STILL_SECONDS
+          : CHALLENGE_ACTION_SECONDS;
+      const challenge = {
+        id: `challenge_${idx + 1}_${action.type.toLowerCase()}`,
+        type: action.type,
+        instruction: action.instruction,
+        startTimeSec,
+        endTimeSec: startTimeSec + duration,
+      };
+      startTimeSec = challenge.endTimeSec;
+      return challenge;
+    });
   };
 
   // Handle permission request
@@ -141,6 +156,10 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({
       <View style={styles.centerContainer}>
         <View style={styles.card}>
           <Text style={styles.warningTitle}>Camera Access Required</Text>
+          <Text style={styles.cardDescription}>
+            NeoKYC uses local front-camera video to verify guided liveness actions and
+            subcutaneous pulse signals on-device. No biometric data is sent to the cloud.
+          </Text>
           <TouchableOpacity style={styles.primaryButton} onPress={requestPermission}>
             <Text style={styles.primaryButtonText}>Enable Camera</Text>
           </TouchableOpacity>
@@ -150,11 +169,13 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({
   }
 
   const startScanFlow = () => {
-    if (phase !== 'IDLE') return;
+    // State updates render asynchronously; the ref closes the rapid double-tap race.
+    if (phase !== 'IDLE' || scanInFlightRef.current) return;
     if (!cameraRef.current) {
       setErrorMessage('Camera preview is not ready yet. Please try again.');
       return;
     }
+    scanInFlightRef.current = true;
 
     setErrorMessage(null);
     setResult(null);
@@ -181,20 +202,23 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({
 
   const startRecording = async (activeChallenges: LivenessChallenge[]) => {
     setPhase('RECORDING');
-    isRecordingRef.current = true;
     setRecordCountdown(TOTAL_RECORDING_SECONDS);
 
-    let elapsedSeconds = 0;
+    // Use wall-clock elapsed time so delayed JS timer ticks do not desync prompts.
+    const recordingStartedAt = Date.now();
     timerRef.current = setInterval(() => {
-      elapsedSeconds += 1;
+      const elapsedSeconds = Math.min(
+        TOTAL_RECORDING_SECONDS,
+        Math.floor((Date.now() - recordingStartedAt) / 1000),
+      );
       const remaining = TOTAL_RECORDING_SECONDS - elapsedSeconds;
       setRecordCountdown(Math.max(0, remaining));
 
-      // Update current challenge step based on elapsed time
-      const curIndex = Math.min(
-        NUM_CHALLENGES - 1,
-        Math.floor(elapsedSeconds / CHALLENGE_DURATION_SECONDS)
+      // Challenge intervals are intentionally uneven: the final interval is still.
+      const matchingChallenge = activeChallenges.findIndex(
+        (challenge) => elapsedSeconds < challenge.endTimeSec,
       );
+      const curIndex = matchingChallenge < 0 ? NUM_CHALLENGES - 1 : matchingChallenge;
       setActiveChallengeIndex(curIndex);
 
       if (remaining <= 0) {
@@ -212,44 +236,26 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({
       if (video?.uri) {
         recordedUri = video.uri;
       }
-    } catch (err: any) {
-      setErrorMessage(err?.message || 'Camera recording interrupted.');
+    } catch (err: unknown) {
+      setErrorMessage(err instanceof Error ? err.message : 'Camera recording interrupted.');
       setPhase('IDLE');
       if (timerRef.current) clearInterval(timerRef.current);
-      isRecordingRef.current = false;
+      scanInFlightRef.current = false;
       return;
     }
 
     if (timerRef.current) clearInterval(timerRef.current);
-    isRecordingRef.current = false;
-
     if (!recordedUri) {
       setErrorMessage('Video recording produced an empty output. Please retry.');
       setPhase('IDLE');
+      scanInFlightRef.current = false;
       return;
     }
 
     // Phase: Analyzing on-device
     setPhase('ANALYZING');
-    setAnalysisStatusText('Decoding video frames at 15 FPS...');
-
-    let tickerStep = 0;
-    analysisTickerRef.current = setInterval(() => {
-      tickerStep++;
-      if (tickerStep === 1) {
-        setAnalysisStatusText('Running MediaPipe Face Mesh tracking...');
-      } else if (tickerStep === 2) {
-        setAnalysisStatusText('Verifying randomized challenge actions...');
-      } else if (tickerStep === 3) {
-        setAnalysisStatusText('Computing subcutaneous rPPG pulse spectrum...');
-      } else if (tickerStep >= 4) {
-        setAnalysisStatusText('Finalizing zero-trust multi-factor assessment...');
-      }
-    }, 2500);
-
     try {
       const analysisResult = await rppgService.processVideo(recordedUri, activeChallenges);
-      if (analysisTickerRef.current) clearInterval(analysisTickerRef.current);
 
       setResult(analysisResult);
       setPhase('RESULT');
@@ -257,21 +263,28 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({
       if (onComplete) {
         onComplete(analysisResult);
       }
-    } catch (err: any) {
-      if (analysisTickerRef.current) clearInterval(analysisTickerRef.current);
-      setErrorMessage('Native rPPG processing failed: ' + (err?.message || 'Unknown error'));
+      // The app owns the full result screen, so show it as soon as analysis completes.
+      onNavigate?.('Result');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      setErrorMessage('Native rPPG processing failed: ' + message);
       setPhase('IDLE');
+      scanInFlightRef.current = false;
     } finally {
       if (recordedUri) {
-        await rppgService.deleteVideoFile(recordedUri);
+        // Cleanup failure must never replace the visible analysis result.
+        try {
+          await rppgService.deleteVideoFile(recordedUri);
+        } catch {
+          // The service reports cleanup failures without exposing the biometric URI.
+        }
       }
     }
   };
 
   const resetScan = () => {
     if (timerRef.current) clearInterval(timerRef.current);
-    if (analysisTickerRef.current) clearInterval(analysisTickerRef.current);
-    isRecordingRef.current = false;
+    scanInFlightRef.current = false;
     setResult(null);
     setErrorMessage(null);
     setPhase('IDLE');
@@ -301,9 +314,9 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({
     <View style={styles.container}>
       {/* Top Header */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Liveness Check</Text>
+        <Text style={styles.headerTitle}>Face Liveness Verification</Text>
         <Text style={styles.headerSubtitle}>
-          Zero-Trust On-Device Action Verification + Subcutaneous Pulse
+          Active gesture challenges and liveness detection
         </Text>
       </View>
 
@@ -316,34 +329,34 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({
             facing="front"
             mode="video"
             mute={true}
-          >
-            {/* Darkened Mask with Oval Cutout */}
-            <View style={styles.overlayContainer}>
-              <View
-                style={[
-                  styles.ovalGuide,
-                  phase === 'RECORDING' && styles.ovalGuideRecording,
-                  phase === 'PREPARING' && styles.ovalGuidePreparing,
-                ]}
-              >
-                {phase === 'PREPARING' && (
-                  <View style={styles.prepOverlay}>
-                    <Text style={styles.prepNumber}>{prepCountdown}</Text>
-                    <Text style={styles.prepText}>GET READY</Text>
-                  </View>
-                )}
+          />
 
-                {phase === 'RECORDING' && (
-                  <View style={styles.recordingIndicator}>
-                    <View style={styles.recordingDot} />
-                    <Text style={styles.recordingText}>
-                      REC {recordCountdown}s
-                    </Text>
-                  </View>
-                )}
-              </View>
+          {/* Expo CameraView is a native surface and does not support React children. */}
+          <View pointerEvents="none" style={styles.overlayContainer}>
+            <View
+              style={[
+                styles.ovalGuide,
+                phase === 'RECORDING' && styles.ovalGuideRecording,
+                phase === 'PREPARING' && styles.ovalGuidePreparing,
+              ]}
+            >
+              {phase === 'PREPARING' && (
+                <View style={styles.prepOverlay}>
+                  <Text style={styles.prepNumber}>{prepCountdown}</Text>
+                  <Text style={styles.prepText}>GET READY</Text>
+                </View>
+              )}
+
+              {phase === 'RECORDING' && (
+                <View style={styles.recordingIndicator}>
+                  <View style={styles.recordingDot} />
+                  <Text style={styles.recordingText}>
+                    REC {recordCountdown}s
+                  </Text>
+                </View>
+              )}
             </View>
-          </CameraView>
+          </View>
 
           {/* Interactive Instruction / Challenge HUD */}
           <View style={styles.instructionsContainer}>
@@ -352,7 +365,7 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({
                 <Text style={styles.instructionHeading}>Randomized Liveness Challenge</Text>
                 <Text style={styles.instructionDetail}>
                   You will be prompted with short, guided actions (e.g. smile, turn head, blink)
-                  followed by resting pulse capture. Total session duration: 30 seconds.
+                  followed by holding steady. The check takes 15 seconds.
                 </Text>
                 {errorMessage && (
                   <View style={styles.errorBox}>
@@ -360,7 +373,7 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({
                   </View>
                 )}
                 <TouchableOpacity style={styles.primaryButton} onPress={startScanFlow}>
-                  <Text style={styles.primaryButtonText}>Start Guided Liveness Scan</Text>
+                  <Text style={styles.primaryButtonText}>Start Liveness Scan</Text>
                 </TouchableOpacity>
               </>
             )}
@@ -382,8 +395,9 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({
                     CHALLENGE {activeChallengeIndex + 1} OF {NUM_CHALLENGES}
                   </Text>
                   <Text style={styles.stepTimer}>
-                    {CHALLENGE_DURATION_SECONDS -
-                      ((TOTAL_RECORDING_SECONDS - recordCountdown) % CHALLENGE_DURATION_SECONDS)}s left
+                    {Math.max(0, Math.ceil(
+                      currentChallenge.endTimeSec - (TOTAL_RECORDING_SECONDS - recordCountdown),
+                    ))}s left
                   </Text>
                 </View>
 
@@ -418,8 +432,11 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({
             {phase === 'ANALYZING' && (
               <View style={styles.analyzingContainer}>
                 <ActivityIndicator size="large" color="#38BDF8" style={styles.spinner} />
-                <Text style={styles.analyzingTitle}>Analyzing Guided Liveness</Text>
+                <Text style={styles.analyzingTitle}>Verifying Liveness</Text>
                 <Text style={styles.analyzingStatus}>{analysisStatusText}</Text>
+                <Text style={styles.analyzingSubtitle}>
+                  Validating facial gestures and authenticity on-device
+                </Text>
               </View>
             )}
           </View>
@@ -429,189 +446,99 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({
         <ScrollView style={styles.resultScrollView} contentContainerStyle={styles.resultContent}>
           {result && (
             <View style={styles.resultCard}>
-              {/* Challenge Verification Section */}
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>1. Challenge-Based Liveness</Text>
-                <View
+              {/* 1. Final Verdict Banner */}
+              <View
+                style={[
+                  styles.verdictCard,
+                  result.verdict === 'REAL_FACE_VERIFIED'
+                    ? styles.verdictReal
+                    : result.verdict === 'SPOOF_DETECTED'
+                      ? styles.verdictSpoof
+                      : result.verdict === 'VERIFICATION_FAILED'
+                        ? styles.verdictFailed
+                        : styles.verdictInconclusive,
+                ]}
+              >
+                <Text
                   style={[
-                    styles.badge,
-                    result.verdictTier === 'VERIFIED'
-                      ? styles.badgeSuccess
-                      : styles.badgeWarning,
+                    styles.verdictTitle,
+                    result.verdict === 'REAL_FACE_VERIFIED'
+                      ? styles.textReal
+                      : result.verdict === 'SPOOF_DETECTED'
+                        ? styles.textSpoof
+                        : result.verdict === 'VERIFICATION_FAILED'
+                          ? styles.textFailed
+                          : styles.textInconclusive,
                   ]}
                 >
-                  <Text
-                    style={[
-                      styles.badgeText,
-                      result.verdictTier === 'VERIFIED'
-                        ? styles.badgeTextSuccess
-                        : styles.badgeTextWarning,
-                    ]}
-                  >
-                    {result.verdictTier === 'RETRY_REQUIRED'
-                      ? 'RETRY REQUIRED'
-                      : result.challengeLivenessPass
-                        ? `PASSED (${result.challengesPassed}/${result.challengesTotal})`
-                        : `UNCONFIRMED (${result.challengesPassed}/${result.challengesTotal})`}
-                  </Text>
-                </View>
-              </View>
-
-              {/* Challenge Breakdown List */}
-              <View style={styles.challengeList}>
-                {(result.challenges || []).map((ch, index) => (
-                  <View key={ch.id || index} style={styles.challengeRow}>
-                    <Text style={styles.challengeItemIcon}>
-                      {ch.verified ? '✅' : '⚠️'}
-                    </Text>
-                    <View style={styles.challengeItemBody}>
-                      <Text style={styles.challengeItemTitle}>
-                        {ch.instruction}
-                      </Text>
-                      <Text
-                        style={[
-                          styles.challengeItemDetail,
-                          ch.verified ? styles.textVerified : styles.textUnconfirmed,
-                        ]}
-                      >
-                        {result.verdictTier === 'RETRY_REQUIRED'
-                          ? 'Face was not clearly detected to verify movement'
-                          : ch.detail}
-                      </Text>
-                    </View>
-                    <Text
-                      style={[
-                        styles.challengeItemStatus,
-                        ch.verified ? styles.textVerified : styles.textUnconfirmed,
-                      ]}
-                    >
-                      {ch.verified ? 'VERIFIED' : 'UNCONFIRMED'}
-                    </Text>
-                  </View>
-                ))}
-              </View>
-
-              {/* Physiological Pulse rPPG Section */}
-              <View style={[styles.sectionHeader, { marginTop: 20 }]}>
-                <Text style={styles.sectionTitle}>2. Physiological Pulse (rPPG)</Text>
-                <View
-                  style={[
-                    styles.badge,
-                    result.status === 'CONFIRMED_PULSE'
-                      ? styles.badgeSuccess
-                      : styles.badgeWarning,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.badgeText,
-                      result.status === 'CONFIRMED_PULSE'
-                        ? styles.badgeTextSuccess
-                        : styles.badgeTextWarning,
-                    ]}
-                  >
-                    {result.verdictTier === 'RETRY_REQUIRED'
-                      ? 'RETRY REQUIRED'
-                      : result.status.replace('INCONCLUSIVE_', '')}
-                  </Text>
-                </View>
-              </View>
-              <Text style={styles.resultDescription}>{result.message}</Text>
-
-              {/* Metric Tiles Grid */}
-              <View style={styles.metricsGrid}>
-                <View style={styles.metricTile}>
-                  <Text style={styles.metricLabel}>ESTIMATED PULSE</Text>
-                  <Text style={styles.metricValue}>
-                    {result.estimatedBpm > 0
-                      ? `${result.estimatedBpm.toFixed(1)} BPM`
-                      : 'N/A'}
-                  </Text>
-                </View>
-
-                <View style={styles.metricTile}>
-                  <Text style={styles.metricLabel}>SIGNAL QUALITY</Text>
-                  <Text style={styles.metricValue}>{result.signalQuality}</Text>
-                </View>
-
-                <View style={styles.metricTile}>
-                  <Text style={styles.metricLabel}>TRACKED FRAMES</Text>
-                  <Text style={styles.metricValue}>
-                    {result.usableFrames} / {result.totalFrames}
-                  </Text>
-                </View>
-
-                <View style={styles.metricTile}>
-                  <Text style={styles.metricLabel}>SNR RATIO</Text>
-                  <Text style={styles.metricValue}>
-                    {result.snrDb.toFixed(1)} dB
-                  </Text>
-                </View>
-
-                {result.processingMetrics && (
-                  <View style={[styles.metricTile, { flexBasis: '100%' }]}>
-                    <Text style={styles.metricLabel}>PROCESSING DURATION</Text>
-                    <Text style={styles.metricValue}>
-                      {(result.processingMetrics.totalDurationMs / 1000).toFixed(2)}s @ {result.processingMetrics.fpsSampled} FPS
-                    </Text>
-                  </View>
-                )}
-              </View>
-
-              {/* Multi-Factor Zero-Trust Decision Engine */}
-              <View style={styles.riskCard}>
-                <Text style={styles.riskCardTitle}>Zero-Trust Multi-Factor Verdict</Text>
-                <Text style={styles.riskCardText}>
-                  {result.verdictTier === 'RETRY_REQUIRED'
-                    ? "We couldn't detect your face clearly. Face the camera, improve lighting, and try again."
-                    : result.verdictTier === 'VERIFIED'
-                      ? 'Both interactive facial challenge confirmation and physiological blood-volume pulsatile verification passed on-device.'
-                      : result.verdictTier === 'INCONCLUSIVE'
-                        ? 'Interactive action challenges were completed, but subcutaneous pulse signals did not meet high-confidence threshold.'
-                        : 'One or more required interactive challenge actions could not be verified by landmark analysis.'}
+                  {result.verdictTitle || 'INCONCLUSIVE — TRY AGAIN'}
                 </Text>
-                <View style={styles.riskRow}>
-                  <Text style={styles.riskLabel}>Overall Assurance Tier:</Text>
-                  <Text
-                    style={[
-                      styles.riskValue,
-                      result.verdictTier === 'VERIFIED'
-                        ? styles.riskPassed
-                        : result.verdictTier === 'FAILED'
-                          ? styles.riskFailed
-                          : styles.riskElevated,
-                    ]}
-                  >
-                    {result.verdictTier === 'VERIFIED'
-                      ? 'VERIFIED (LOW RISK)'
-                      : result.verdictTier === 'RETRY_REQUIRED'
-                        ? 'RETRY REQUIRED'
-                        : result.verdictTier === 'INCONCLUSIVE'
-                          ? 'INCONCLUSIVE'
-                          : 'FAILED (HIGH RISK)'}
-                  </Text>
+                <Text style={styles.verdictDescription}>
+                  {result.verdictDescription || result.message}
+                </Text>
+              </View>
+
+              {/* 2. Gesture Checks Card */}
+              <View style={styles.gestureCard}>
+                <View style={styles.cardHeader}>
+                  <Text style={styles.cardTitle}>Gesture Checks</Text>
+                  {result.challenges && result.challenges.length > 0 && (
+                    <Text style={styles.counterText}>
+                      {result.challenges.filter((c) => c.verified).length} / {result.challenges.length} Passed
+                    </Text>
+                  )}
                 </View>
+
+                {result.challenges && result.challenges.length > 0 ? (
+                  <View style={styles.gestureList}>
+                    {result.challenges.map((ch, index) => (
+                      <View key={ch.id || index} style={styles.gestureItem}>
+                        <View
+                          style={[
+                            styles.checkbox,
+                            ch.verified ? styles.checkboxChecked : styles.checkboxUnchecked,
+                          ]}
+                        >
+                          {ch.verified && <Text style={styles.checkboxCheckmark}>✓</Text>}
+                        </View>
+                        <View style={styles.gestureContent}>
+                          <Text
+                            style={[
+                              styles.gestureName,
+                              !ch.verified && styles.gestureNameIncomplete,
+                            ]}
+                          >
+                            {ch.instruction}
+                          </Text>
+                        </View>
+                        <Text
+                          style={[
+                            styles.gestureStatus,
+                            ch.verified ? styles.statusCompleted : styles.statusIncomplete,
+                          ]}
+                        >
+                          {ch.verified ? 'Completed' : 'Not completed'}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : (
+                  <Text style={styles.emptyText}>No gesture checks recorded.</Text>
+                )}
               </View>
 
               {/* Action Buttons */}
               <View style={styles.buttonRow}>
-                <TouchableOpacity
-                  style={result.verdictTier === 'RETRY_REQUIRED' ? styles.primaryButton : styles.secondaryButton}
-                  onPress={resetScan}
-                >
-                  <Text style={result.verdictTier === 'RETRY_REQUIRED' ? styles.primaryButtonText : styles.secondaryButtonText}>
-                    {result.verdictTier === 'RETRY_REQUIRED' ? 'Try Again' : 'Re-test Liveness'}
-                  </Text>
+                <TouchableOpacity style={styles.primaryButton} onPress={resetScan}>
+                  <Text style={styles.primaryButtonText}>Re-test Liveness</Text>
                 </TouchableOpacity>
 
                 {onNavigate && (
                   <TouchableOpacity
-                    style={result.verdictTier === 'RETRY_REQUIRED' ? styles.secondaryButton : styles.primaryButton}
-                    onPress={() => onNavigate('Result')}
+                    style={styles.secondaryButton}
+                    onPress={() => onNavigate('Home')}
                   >
-                    <Text style={result.verdictTier === 'RETRY_REQUIRED' ? styles.secondaryButtonText : styles.primaryButtonText}>
-                      View Full Results
-                    </Text>
+                    <Text style={styles.secondaryButtonText}>Return Home</Text>
                   </TouchableOpacity>
                 )}
               </View>
@@ -679,6 +606,8 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
+    zIndex: 1,
+    elevation: 1,
   },
   ovalGuide: {
     width: 250,
@@ -895,155 +824,141 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#334155',
   },
-  sectionHeader: {
+  verdictCard: {
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1.5,
+    marginBottom: 16,
+  },
+  verdictReal: {
+    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+    borderColor: '#10B981',
+  },
+  verdictSpoof: {
+    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+    borderColor: '#EF4444',
+  },
+  verdictFailed: {
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+    borderColor: '#F59E0B',
+  },
+  verdictInconclusive: {
+    backgroundColor: 'rgba(148, 163, 184, 0.08)',
+    borderColor: '#64748B',
+  },
+  verdictTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+    marginBottom: 6,
+  },
+  textReal: {
+    color: '#10B981',
+  },
+  textSpoof: {
+    color: '#EF4444',
+  },
+  textFailed: {
+    color: '#F59E0B',
+  },
+  textInconclusive: {
+    color: '#94A3B8',
+  },
+  verdictDescription: {
+    color: '#E2E8F0',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '500',
+  },
+  gestureCard: {
+    backgroundColor: '#1E293B',
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#334155',
+    marginBottom: 20,
+  },
+  cardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 12,
   },
-  sectionTitle: {
+  cardTitle: {
     color: '#F8FAFC',
     fontSize: 15,
     fontWeight: '700',
+    letterSpacing: 0.3,
   },
-  badge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
+  counterText: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '600',
   },
-  badgeSuccess: {
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-  },
-  badgeWarning: {
-    backgroundColor: 'rgba(245, 158, 11, 0.15)',
-  },
-  badgeText: {
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  badgeTextSuccess: {
-    color: '#10B981',
-  },
-  badgeTextWarning: {
-    color: '#F59E0B',
-  },
-  challengeList: {
+  gestureList: {
     backgroundColor: '#0F172A',
-    borderRadius: 12,
-    padding: 10,
-    gap: 8,
+    borderRadius: 10,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
     borderWidth: 1,
     borderColor: '#334155',
   },
-  challengeRow: {
+  gestureItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 4,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1E293B',
   },
-  challengeItemIcon: {
-    fontSize: 16,
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
     marginRight: 10,
   },
-  challengeItemBody: {
-    flex: 1,
+  checkboxChecked: {
+    backgroundColor: '#10B981',
   },
-  challengeItemTitle: {
+  checkboxUnchecked: {
+    borderWidth: 1.5,
+    borderColor: '#64748B',
+    backgroundColor: 'transparent',
+  },
+  checkboxCheckmark: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  gestureContent: {
+    flex: 1,
+    marginRight: 8,
+  },
+  gestureName: {
     color: '#F8FAFC',
     fontSize: 13,
     fontWeight: '600',
   },
-  challengeItemDetail: {
-    fontSize: 11,
-    marginTop: 1,
+  gestureNameIncomplete: {
+    color: '#94A3B8',
   },
-  challengeItemStatus: {
-    fontSize: 11,
+  gestureStatus: {
+    fontSize: 12,
     fontWeight: '700',
-    marginLeft: 8,
   },
-  textVerified: {
+  statusCompleted: {
     color: '#10B981',
   },
-  textUnconfirmed: {
-    color: '#F59E0B',
-  },
-  resultDescription: {
-    color: '#94A3B8',
-    fontSize: 13,
-    lineHeight: 18,
-    marginBottom: 14,
-  },
-  metricsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
-  },
-  metricTile: {
-    flexBasis: '48%',
-    backgroundColor: '#0F172A',
-    padding: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  metricLabel: {
+  statusIncomplete: {
     color: '#64748B',
-    fontSize: 9,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-    marginBottom: 3,
   },
-  metricValue: {
-    color: '#F8FAFC',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  riskCard: {
-    backgroundColor: '#0F172A',
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#334155',
-    marginBottom: 16,
-  },
-  riskCardTitle: {
-    color: '#F8FAFC',
-    fontSize: 14,
-    fontWeight: '700',
-    marginBottom: 4,
-  },
-  riskCardText: {
+  emptyText: {
     color: '#94A3B8',
-    fontSize: 12,
-    lineHeight: 16,
-    marginBottom: 10,
-  },
-  riskRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#334155',
-  },
-  riskLabel: {
-    color: '#94A3B8',
-    fontSize: 12,
-  },
-  riskValue: {
     fontSize: 13,
-    fontWeight: '800',
-  },
-  riskPassed: {
-    color: '#10B981',
-  },
-  riskElevated: {
-    color: '#F59E0B',
-  },
-  riskFailed: {
-    color: '#EF4444',
+    fontStyle: 'italic',
+    paddingVertical: 10,
+    textAlign: 'center',
   },
   buttonRow: {
     flexDirection: 'row',

@@ -16,22 +16,22 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onNavigate }) => {
       <View style={styles.navContainer}>
         <Text style={styles.sectionHeader}>Test Navigation</Text>
 
-        <TouchableOpacity 
-          style={styles.button} 
+        <TouchableOpacity
+          style={styles.button}
           onPress={() => onNavigate('DocumentScan')}
         >
           <Text style={styles.buttonText}>1. Document Scan Screen</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity 
-          style={[styles.button, styles.secondaryButton]} 
+        <TouchableOpacity
+          style={[styles.button, styles.secondaryButton]}
           onPress={() => onNavigate('FaceLiveness')}
         >
           <Text style={styles.buttonText}>2. Liveness Check Screen</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity 
-          style={[styles.button, styles.accentButton]} 
+        <TouchableOpacity
+          style={[styles.button, styles.accentButton]}
           onPress={() => onNavigate('Result')}
         >
           <Text style={styles.buttonText}>3. Verification Result Screen</Text>

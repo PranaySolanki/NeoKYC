@@ -276,8 +276,8 @@ object DspUtils {
             return PsdResult(DoubleArray(0), DoubleArray(0), 0.0, 0.0, 0.0, 0.0)
         }
 
-        // Segment size: min(n, 8 * fps), at least 32 points
-        val segLen = min(n, max(32, (8.0 * fps).roundToInt()))
+        // Segment size: min(n, 4.5 * fps), at least 32 points for true Welch multi-window averaging
+        val segLen = min(n, max(32, (4.5 * fps).roundToInt()))
         val step = max(1, segLen / 2) // 50% overlap
         val nFft = max(1024, nextPowerOf2(segLen * 4)) // High frequency resolution
 
@@ -369,19 +369,27 @@ object DspUtils {
         val peakHz = freqs[peakIdx]
         val bpm = peakHz * 60.0
 
-        // In-band peak power within +/- CARDIAC_HALF_BAND_HZ (+/- 6 BPM)
+        // In-band peak power: captures the Hann window main lobe (+/- 0.22 Hz, ~13 BPM)
+        // and physiological first harmonic (2 * peakHz) as standard in rPPG (de Haan et al.)
+        val halfBand = 0.22
+        val harmonicHz = peakHz * 2.0
+
         var peakBandPower = 0.0
         for (k in 0 until numFreqBins) {
             val f = freqs[k]
-            if (f in minHz..maxHz && abs(f - peakHz) <= CARDIAC_HALF_BAND_HZ) {
-                peakBandPower += avgPower[k]
+            if (f in minHz..maxHz) {
+                val isFundamental = abs(f - peakHz) <= halfBand
+                val isHarmonic = (harmonicHz <= maxHz) && abs(f - harmonicHz) <= halfBand
+                if (isFundamental || isHarmonic) {
+                    peakBandPower += avgPower[k]
+                }
             }
         }
 
         val peakPowerFraction = (peakBandPower / totalCardiacPower).coerceIn(0.0, 1.0)
         val noisePower = max(0.0, totalCardiacPower - peakBandPower)
-        val snrDb = if (noisePower > 1e-12 && peakBandPower > 1e-12) {
-            10.0 * log10(peakBandPower / noisePower)
+        val snrDb = if (peakBandPower > 1e-12) {
+            10.0 * log10(peakBandPower / max(noisePower, peakBandPower * 1e-6))
         } else {
             0.0
         }

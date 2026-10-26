@@ -2,17 +2,13 @@ package com.siddhi_2305.zerotrustekyc.rppg
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Matrix
 import android.media.MediaMetadataRetriever
 import android.net.Uri
-import android.os.Build
 import android.util.Log
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.components.containers.NormalizedLandmark
 import com.google.mediapipe.tasks.core.BaseOptions
-import com.google.mediapipe.tasks.core.Delegate
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarker
 import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarkerResult
@@ -24,8 +20,8 @@ import kotlin.math.*
  * Optimized on-device native rPPG and Guided Liveness Processor.
  *
  * Implements:
- * 1. Aspect-preserving frame extraction with automatic orientation calibration and ARGB_8888 conversion
- * 2. MediaPipe Tasks Vision FaceLandmarker with CPU delegate in RunningMode.IMAGE
+ * 1. Sequential video decoding with sampled, aspect-preserving frame conversion
+ * 2. MediaPipe Tasks Vision FaceLandmarker in RunningMode.VIDEO
  * 3. Real-time facial action challenge verification:
  *    - Blink detection via bilateral Eye Aspect Ratio (EAR)
  *    - Smile detection via lip corner expansion ratio
@@ -33,8 +29,7 @@ import kotlin.math.*
  *    - Head pitch tilt (Tilt up)
  *    - Frontal center alignment
  * 4. Distinct rPPG pulse analysis on stable frontal windows avoiding motion-artifact corruption
- * 5. Multi-tiered fair verification verdicts: VERIFIED, RETRY_REQUIRED, INCONCLUSIVE, FAILED
- * 6. Comprehensive stage-by-stage timing measurements
+ * 5. Comprehensive stage-by-stage timing measurements
  */
 class RppgProcessor(private val context: Context) {
 
@@ -73,7 +68,8 @@ class RppgProcessor(private val context: Context) {
         private const val CHIN = 152
 
         // Optimized target dimensions for fast, memory-safe MediaPipe inference
-        private const val TARGET_FRAME_WIDTH = 360
+        private const val TARGET_FRAME_WIDTH = 256
+        private const val TARGET_FRAME_HEIGHT = 340
 
         // Optimal rPPG and challenge sampling rate (15 FPS provides >2.5x Nyquist margin over 3 Hz pulse)
         private const val TARGET_FPS = 15.0
@@ -108,18 +104,21 @@ class RppgProcessor(private val context: Context) {
 
     data class Result(
         val success: Boolean,
-        val verdictTier: String,
         val status: String,
-        val estimatedBpm: Double,
-        val signalQuality: String,
-        val usableFrames: Int,
-        val totalFrames: Int,
-        val faceRatio: Double,
-        val durationSeconds: Double,
-        val snrDb: Double,
-        val peakPowerFraction: Double,
-        val isLikelyLiveness: Boolean,
-        val message: String,
+        val verdict: String = "INCONCLUSIVE",
+        val verdictTitle: String = "INCONCLUSIVE — TRY AGAIN",
+        val verdictDescription: String = "",
+        val spoofReason: String? = null,
+        val estimatedBpm: Double = 0.0,
+        val signalQuality: String = "UNRELIABLE",
+        val usableFrames: Int = 0,
+        val totalFrames: Int = 0,
+        val faceRatio: Double = 0.0,
+        val durationSeconds: Double = 0.0,
+        val snrDb: Double = 0.0,
+        val peakPowerFraction: Double = 0.0,
+        val isLikelyLiveness: Boolean = false,
+        val message: String = "",
         val challenges: List<ChallengeResult> = emptyList(),
         val challengesPassed: Int = 0,
         val challengesTotal: Int = 0,
@@ -149,7 +148,7 @@ class RppgProcessor(private val context: Context) {
                 val path = uri.path ?: videoUriString
                 val file = File(path)
                 if (!file.exists()) {
-                    return failureResult("Video file not found at path: $path", "RETRY_REQUIRED")
+                    return failureResult("Video file not found at path: $path")
                 }
                 retriever.setDataSource(file.absolutePath)
             } else {
@@ -161,18 +160,10 @@ class RppgProcessor(private val context: Context) {
             val durationMs = durationMsStr?.toLongOrNull() ?: 0L
             val durationSec = durationMs / 1000.0
 
-            val videoW = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
-            val videoH = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
-            val rotationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
-            val metadataRotationDeg = rotationStr?.toIntOrNull() ?: 0
-
-            Log.i(TAG, "Video metadata: duration=${String.format("%.2f", durationSec)}s, dimensions=${videoW}x${videoH}, rotationTag=${metadataRotationDeg}deg")
-
             if (durationSec < 4.0) {
                 return Result(
                     success = false,
-                    verdictTier = "RETRY_REQUIRED",
-                    status = "RETRY_REQUIRED",
+                    status = "INCONCLUSIVE_TOO_SHORT",
                     estimatedBpm = 0.0,
                     signalQuality = "UNRELIABLE",
                     usableFrames = 0,
@@ -186,67 +177,51 @@ class RppgProcessor(private val context: Context) {
                 )
             }
 
-            // Initialize MediaPipe FaceLandmarker with CPU delegate in RunningMode.IMAGE
-            Log.i(TAG, "Initializing FaceLandmarker: mode=IMAGE, delegate=CPU, minConfidence=0.20")
+            val rotationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+            val rotationDeg = rotationStr?.toIntOrNull() ?: 0
+
+            // Initialize MediaPipe FaceLandmarker in VIDEO running mode
             val baseOptions = BaseOptions.builder()
                 .setModelAssetPath("face_landmarker.task")
-                .setDelegate(Delegate.CPU)
                 .build()
 
             val options = FaceLandmarker.FaceLandmarkerOptions.builder()
                 .setBaseOptions(baseOptions)
-                .setRunningMode(RunningMode.IMAGE)
+                .setRunningMode(RunningMode.VIDEO)
                 .setNumFaces(1)
                 .setMinFaceDetectionConfidence(0.20f)
                 .setMinFacePresenceConfidence(0.20f)
                 .setMinTrackingConfidence(0.20f)
                 .build()
 
-            landmarker = try {
-                FaceLandmarker.createFromOptions(context, options)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to initialize FaceLandmarker: ${e.message}", e)
-                return failureResult("Failed to initialize face detection model: ${e.message}", "RETRY_REQUIRED")
-            }
+            val faceLandmarker = FaceLandmarker.createFromOptions(context, options)
+            landmarker = faceLandmarker
 
-            // Dynamic orientation calibration on the recorded video frames
-            val calibratedRotation = calibrateOrientation(retriever, landmarker, durationMs, metadataRotationDeg, videoW, videoH)
-            Log.i(TAG, "Orientation calibration determined rotation angle: ${calibratedRotation}deg")
-
-            // Calculate frame sampling parameters at 15 FPS
-            val frameStepMs = (1000.0 / TARGET_FPS).roundToLong().coerceAtLeast(33L)
             val rawRgbSamples = ArrayList<DoubleArray?>()
-            val timestampsMs = ArrayList<Long>()
             val yawValues = ArrayList<Double>()
-            var facesDetectedCount = 0
+            val allEarSamples = ArrayList<Double>()
+            val allSmileSamples = ArrayList<Double>()
+            val allPitchSamples = ArrayList<Double>()
+            val allDepthSamples = ArrayList<Double>()
+            val allSkinRgb = ArrayList<DoubleArray>()
             var usableFrames = 0
 
             // Initialize challenge trackers
             val challengeEvaluators = challenges.map { ChallengeEvaluator(it) }
 
-            var currentTimestampMs = 0L
             var frameIdx = 0
-
-            while (currentTimestampMs <= durationMs) {
-                val timeUs = currentTimestampMs * 1000L
-
-                // 1. Frame extraction & conversion with calibrated rotation
-                val tStartExtract = System.currentTimeMillis()
-                val frameBitmap = extractAndTransformFrame(retriever, timeUs, calibratedRotation, targetWidth = TARGET_FRAME_WIDTH, videoW = videoW, videoH = videoH)
-                val tAfterExtract = System.currentTimeMillis()
-                totalExtractionMs += (tAfterExtract - tStartExtract)
-
-                if (frameBitmap == null) {
-                    currentTimestampMs += frameStepMs
-                    frameIdx++
-                    continue
-                }
-
-                // 2. MediaPipe FaceLandmarker inference (RunningMode.IMAGE)
+            // Sequential decoding avoids repeatedly seeking and decoding from keyframes.
+            val totalFrames = VideoFrameDecoder(context).decode(
+                videoUriString,
+                TARGET_FPS,
+                rotationDeg,
+            ) { currentTimestampMs, frameBitmap ->
+                try {
+                // 2. MediaPipe FaceLandmarker inference
                 val mpImage = BitmapImageBuilder(frameBitmap).build()
                 val tStartLandmark = System.currentTimeMillis()
                 val detectionResult: FaceLandmarkerResult? = try {
-                    landmarker.detect(mpImage)
+                    faceLandmarker.detectForVideo(mpImage, currentTimestampMs)
                 } catch (e: Exception) {
                     Log.w(TAG, "FaceLandmarker detect failed at frame $frameIdx: ${e.message}")
                     null
@@ -258,24 +233,37 @@ class RppgProcessor(private val context: Context) {
                 var frameYaw = 0.0
 
                 if (detectionResult != null && detectionResult.faceLandmarks().isNotEmpty()) {
-                    facesDetectedCount++
                     val landmarks = detectionResult.faceLandmarks()[0]
 
-                    if (frameIdx < 3 || frameIdx % 30 == 0) {
-                        Log.d(TAG, "Frame $frameIdx (${currentTimestampMs}ms): Face detected with ${landmarks.size} landmarks")
-                    }
+                    val leftEar = computeEyeAspectRatio(landmarks, LEFT_EYE_OUTER, LEFT_EYE_INNER, LEFT_EYE_TOP1, LEFT_EYE_TOP2, LEFT_EYE_BOT1, LEFT_EYE_BOT2)
+                    val rightEar = computeEyeAspectRatio(landmarks, RIGHT_EYE_OUTER, RIGHT_EYE_INNER, RIGHT_EYE_TOP1, RIGHT_EYE_TOP2, RIGHT_EYE_BOT1, RIGHT_EYE_BOT2)
+                    val avgEar = (leftEar + rightEar) / 2.0
+                    allEarSamples.add(avgEar)
+
+                    val smileScore = computeSmileScore(landmarks)
+                    allSmileSamples.add(smileScore)
+
+                    frameYaw = computeHeadYaw(landmarks)
+                    yawValues.add(frameYaw)
+
+                    val pitchVal = computeHeadPitch(landmarks)
+                    allPitchSamples.add(pitchVal)
+
+                    val depthVal = computeFaceDepth(landmarks)
+                    allDepthSamples.add(depthVal)
 
                     // 3. Skin ROI Extraction
                     val tStartSkin = System.currentTimeMillis()
                     frameRgb = extractMeanSkinRgb(frameBitmap, landmarks)
                     val tAfterSkin = System.currentTimeMillis()
                     totalSkinExtractionMs += (tAfterSkin - tStartSkin)
+                    if (frameRgb != null) {
+                        allSkinRgb.add(frameRgb)
+                    }
 
                     // 4. Challenge Tracking
                     val tStartChallenge = System.currentTimeMillis()
                     val curSec = currentTimestampMs / 1000.0
-                    frameYaw = computeHeadYaw(landmarks)
-                    yawValues.add(frameYaw)
 
                     for (evaluator in challengeEvaluators) {
                         if (curSec in evaluator.challenge.startTimeSec..evaluator.challenge.endTimeSec) {
@@ -285,9 +273,6 @@ class RppgProcessor(private val context: Context) {
                     val tAfterChallenge = System.currentTimeMillis()
                     totalChallengeMs += (tAfterChallenge - tStartChallenge)
                 } else {
-                    if (frameIdx < 3) {
-                        Log.w(TAG, "Frame $frameIdx (${currentTimestampMs}ms): No face detected")
-                    }
                     yawValues.add(0.0)
                 }
 
@@ -297,30 +282,27 @@ class RppgProcessor(private val context: Context) {
                 } else {
                     rawRgbSamples.add(null)
                 }
-                timestampsMs.add(currentTimestampMs)
-
-                // Immediately recycle bitmap to maintain low memory footprint
-                frameBitmap.recycle()
-
-                currentTimestampMs += frameStepMs
                 frameIdx++
+                } finally {
+                    // Process one sampled bitmap at a time to keep peak memory bounded.
+                    frameBitmap.recycle()
+                }
             }
 
-            val totalFrames = timestampsMs.size
             if (totalFrames == 0) {
-                return failureResult("No video frames could be decoded from recording.", "RETRY_REQUIRED")
+                return failureResult("No video frames could be decoded from recording.")
             }
 
-            val faceRatio = facesDetectedCount.toDouble() / totalFrames
-            Log.i(TAG, "Detection summary: totalFrames=$totalFrames, facesDetected=$facesDetectedCount (${String.format("%.1f", faceRatio * 100)}%), usableSkin=$usableFrames")
+            val faceRatio = usableFrames.toDouble() / totalFrames
 
-            // Fair verdict check: If face presence is insufficient (< 15 frames or < 5% of total session)
-            if (facesDetectedCount < 15 || faceRatio < 0.05) {
-                Log.w(TAG, "Face detection insufficient: facesDetected=$facesDetectedCount / $totalFrames (${String.format("%.1f", faceRatio * 100)}%) -> RETRY_REQUIRED")
+            // Quality check 1: Usable face presence ratio
+            if (faceRatio < 0.40) {
                 return Result(
                     success = false,
-                    verdictTier = "RETRY_REQUIRED",
-                    status = "RETRY_REQUIRED",
+                    status = "INCONCLUSIVE_NO_FACE",
+                    verdict = "VERIFICATION_FAILED",
+                    verdictTitle = "VERIFICATION FAILED — TRY AGAIN",
+                    verdictDescription = "Face tracking was lost in ${String.format("%.0f", (1.0 - faceRatio) * 100)}% of frames. Please center your face in good lighting and try again.",
                     estimatedBpm = 0.0,
                     signalQuality = "UNRELIABLE",
                     usableFrames = usableFrames,
@@ -330,7 +312,7 @@ class RppgProcessor(private val context: Context) {
                     snrDb = 0.0,
                     peakPowerFraction = 0.0,
                     isLikelyLiveness = false,
-                    message = "We couldn't detect your face clearly. Face the camera, improve lighting, and try again.",
+                    message = "Face tracking was lost in ${String.format("%.1f", (1.0 - faceRatio) * 100)}% of frames. Keep your face centered in good lighting.",
                     challenges = challengeEvaluators.map { it.finish() },
                     challengesPassed = 0,
                     challengesTotal = challenges.size,
@@ -338,84 +320,163 @@ class RppgProcessor(private val context: Context) {
                 )
             }
 
-            // 5. Digital Signal Processing (POS + Bandpass + Welch PSD)
+            // 5. Evaluate guided challenges
+            val challengeResults = challengeEvaluators.map { it.finish() }
+            val challengesPassed = challengeResults.count { it.verified }
+            val challengeLivenessPass = passesRandomizedActions(challengeResults)
+
+            // 6. Digital Signal Processing (POS + Bandpass + Welch PSD)
             val tStartDsp = System.currentTimeMillis()
-
-            // Find optimal frontal, continuous window of >= 8.0s for rPPG pulse estimation
             val optimalWindow = selectStablePulseWindow(rawRgbSamples, yawValues, TARGET_FPS)
-            val rgbForDsp = optimalWindow ?: rawRgbSamples
 
-            // Interpolate missing frames
-            val cleanRgbSeries = ArrayList<DoubleArray>()
-            val dspFrames = rgbForDsp.size
-            for (channel in 0..2) {
-                val channelValues = DoubleArray(dspFrames)
-                for (i in 0 until dspFrames) {
-                    val s = rgbForDsp[i]
-                    channelValues[i] = s?.get(channel) ?: Double.NaN
-                }
-                interpolateSeries(channelValues)
-                for (i in 0 until dspFrames) {
-                    if (channel == 0) {
-                        cleanRgbSeries.add(DoubleArray(3))
+            var status = "INCONCLUSIVE_MOTION"
+            var qualityRating = "UNRELIABLE"
+            var estimatedBpm = 0.0
+            var peakFraction = 0.0
+            var snrDb = 0.0
+            var pulseMessage = "There was not enough steady face footage to measure pulse."
+
+            if (optimalWindow != null) {
+                val cleanRgbSeries = ArrayList<DoubleArray>()
+                val dspFrames = optimalWindow.size
+                for (channel in 0..2) {
+                    val channelValues = DoubleArray(dspFrames)
+                    for (i in 0 until dspFrames) {
+                        val s = optimalWindow[i]
+                        channelValues[i] = s?.get(channel) ?: Double.NaN
                     }
-                    cleanRgbSeries[i][channel] = channelValues[i]
+                    interpolateSeries(channelValues)
+                    for (i in 0 until dspFrames) {
+                        if (channel == 0) {
+                            cleanRgbSeries.add(DoubleArray(3))
+                        }
+                        cleanRgbSeries[i][channel] = channelValues[i]
+                    }
+                }
+
+                val rawPosSignal = DspUtils.posSignal(cleanRgbSeries, TARGET_FPS)
+                val filteredSignal = DspUtils.bandpassFilter(rawPosSignal, TARGET_FPS)
+                val psd = DspUtils.estimateBpmAndQuality(filteredSignal, TARGET_FPS)
+
+                val hasValidBpm = psd.bpm in DspUtils.MIN_BPM..DspUtils.MAX_BPM
+                peakFraction = psd.peakPowerFraction
+                snrDb = psd.snrDb
+
+                if (hasValidBpm && peakFraction >= 0.38 && snrDb >= -1.0) {
+                    status = "CONFIRMED_PULSE"
+                    qualityRating = if (peakFraction >= 0.55 && snrDb >= 1.5) "HIGH" else "MODERATE"
+                    estimatedBpm = psd.bpm
+                    pulseMessage = "A consistent pulse-like rhythm was detected (${String.format("%.1f", psd.bpm)} BPM)."
+                } else if (hasValidBpm && peakFraction >= 0.25 && snrDb >= -3.5) {
+                    status = "INCONCLUSIVE_WEAK_SIGNAL"
+                    qualityRating = "LOW"
+                    estimatedBpm = psd.bpm
+                    pulseMessage = "A weak pulse candidate was detected."
+                } else {
+                    status = "INCONCLUSIVE_WEAK_SIGNAL"
+                    qualityRating = "UNRELIABLE"
+                    estimatedBpm = 0.0
+                    pulseMessage = "The pulse signal was too weak to assess."
+                }
+            } else {
+                status = "INCONCLUSIVE_MOTION"
+                qualityRating = "UNRELIABLE"
+                estimatedBpm = 0.0
+                pulseMessage = "There was not enough continuous, steady face footage to estimate a pulse reliably."
+            }
+            val totalDspMs = System.currentTimeMillis() - tStartDsp
+
+            // 7. Multi-Signal Anti-Spoof Analysis
+            val earMean = if (allEarSamples.isNotEmpty()) allEarSamples.average() else 0.0
+            val earStdDev = if (allEarSamples.size > 1) {
+                sqrt(allEarSamples.map { (it - earMean) * (it - earMean) }.average())
+            } else 0.0
+            val earRange = if (allEarSamples.isNotEmpty()) (allEarSamples.maxOrNull() ?: 0.0) - (allEarSamples.minOrNull() ?: 0.0) else 0.0
+
+            val smileMean = if (allSmileSamples.isNotEmpty()) allSmileSamples.average() else 0.0
+            val smileStdDev = if (allSmileSamples.size > 1) {
+                sqrt(allSmileSamples.map { (it - smileMean) * (it - smileMean) }.average())
+            } else 0.0
+            val smileRange = if (allSmileSamples.isNotEmpty()) (allSmileSamples.maxOrNull() ?: 0.0) - (allSmileSamples.minOrNull() ?: 0.0) else 0.0
+
+            // Check A: Static printed photograph / still image spoof
+            val isStaticPhoto = (faceRatio >= 0.55 && usableFrames >= 35) &&
+                (earStdDev < 0.0035 && earRange < 0.015) &&
+                (smileStdDev < 0.0025 && smileRange < 0.012) &&
+                (challengesPassed == 0) &&
+                (peakFraction < 0.22)
+
+            // Check B: Physical mask / non-skin chrominance check
+            var isMaskDetected = false
+            if (allSkinRgb.size >= 25 && challengesPassed == 0 && peakFraction < 0.20) {
+                val avgR = allSkinRgb.map { it[0] }.average()
+                val avgG = allSkinRgb.map { it[1] }.average()
+                val avgB = allSkinRgb.map { it[2] }.average()
+                val rgRatio = if (avgG > 1e-4) avgR / avgG else 1.0
+                val bgRatio = if (avgG > 1e-4) avgB / avgG else 1.0
+                if (avgR < avgG * 0.92 || rgRatio > 2.6 || bgRatio > 1.35 || bgRatio < 0.30) {
+                    isMaskDetected = true
                 }
             }
 
-            val rawPosSignal = DspUtils.posSignal(cleanRgbSeries, TARGET_FPS)
-            val filteredSignal = DspUtils.bandpassFilter(rawPosSignal, TARGET_FPS)
-            val psd = DspUtils.estimateBpmAndQuality(filteredSignal, TARGET_FPS)
-            val tAfterDsp = System.currentTimeMillis()
-            val totalDspMs = tAfterDsp - tStartDsp
-
-            // Evaluate challenges
-            val challengeResults = challengeEvaluators.map { it.finish() }
-            val challengesPassed = challengeResults.count { it.verified }
-            val challengeLivenessPass = challenges.isEmpty() || (challengesPassed >= max(1, (challenges.size * 0.65).roundToInt()))
-
-            // Assess rPPG pulse validity
-            val hasValidBpm = psd.bpm in DspUtils.MIN_BPM..DspUtils.MAX_BPM
-            val peakFraction = psd.peakPowerFraction
-            val snrDb = psd.snrDb
-
-            val verdictTier: String
-            val status: String
-            val qualityRating: String
+            // 8. Final 4-Tier Verdict Decision Engine
+            val verdict: String
+            val verdictTitle: String
+            val verdictDescription: String
+            var spoofReason: String? = null
             val isLikelyLiveness: Boolean
-            val message: String
 
-            if (!challengeLivenessPass && challenges.isNotEmpty()) {
-                // User face was tracked, but the required challenge actions were failed
-                verdictTier = "FAILED"
-                status = "FAILED"
-                qualityRating = if (hasValidBpm && peakFraction >= 0.20) "MODERATE" else "UNRELIABLE"
+            if (isStaticPhoto) {
+                verdict = "SPOOF_DETECTED"
+                verdictTitle = "SPOOF / FAKE FACE DETECTED"
+                verdictDescription = "A static photograph or printed image was detected. Live physical face required."
+                spoofReason = "STATIC_PHOTO"
                 isLikelyLiveness = false
-                message = "One or more required interactive challenge actions could not be verified."
-            } else if (hasValidBpm && peakFraction >= 0.20 && snrDb >= 1.2) {
-                // Both challenges and physiological pulse verified!
-                verdictTier = "VERIFIED"
-                status = "CONFIRMED_PULSE"
-                qualityRating = if (peakFraction >= 0.30 && snrDb >= 2.5) "HIGH" else "MODERATE"
-                isLikelyLiveness = true
-                message = "Subcutaneous pulsatile physiological rhythm verified (${String.format("%.1f", psd.bpm)} BPM)."
-            } else if (hasValidBpm && peakFraction >= 0.14 && snrDb >= 0.2) {
-                // Challenges passed, but pulse signal is borderline
-                verdictTier = "INCONCLUSIVE"
-                status = "INCONCLUSIVE_WEAK_SIGNAL"
-                qualityRating = "LOW"
+            } else if (isMaskDetected) {
+                verdict = "SPOOF_DETECTED"
+                verdictTitle = "SPOOF / FAKE FACE DETECTED"
+                verdictDescription = "Non-human skin texture or physical mask detected. Live physical face required."
+                spoofReason = "MASK_DETECTED"
                 isLikelyLiveness = false
-                message = "Marginal physiological signal detected (${String.format("%.1f", psd.bpm)} BPM), but confidence is below verification threshold."
+            } else if (faceRatio < 0.50 || usableFrames < 30) {
+                verdict = "VERIFICATION_FAILED"
+                verdictTitle = "VERIFICATION FAILED — TRY AGAIN"
+                verdictDescription = "Face tracking was lost or unclear. Please center your face in good lighting and try again."
+                isLikelyLiveness = false
+            } else if (!challengeLivenessPass) {
+                verdict = "VERIFICATION_FAILED"
+                verdictTitle = "VERIFICATION FAILED — TRY AGAIN"
+                verdictDescription = "One or more required gestures were not completed. Please follow each on-screen prompt and try again."
+                isLikelyLiveness = false
             } else {
-                // Challenges passed, but pulse rhythm unconfirmed
-                verdictTier = "INCONCLUSIVE"
-                status = "INCONCLUSIVE_WEAK_SIGNAL"
-                qualityRating = "UNRELIABLE"
-                isLikelyLiveness = false
-                message = "Face gestures completed, but subcutaneous blood-volume pulse rhythm was inconclusive."
+                // All required gesture challenges passed! Evaluate biometric & rPPG signals together:
+                val hasLivingDynamics = (earRange >= 0.035 || smileRange >= 0.03)
+                if (status == "CONFIRMED_PULSE" && faceRatio >= 0.65) {
+                    verdict = "REAL_FACE_VERIFIED"
+                    verdictTitle = "REAL FACE VERIFIED"
+                    verdictDescription = "Live human face verified through confirmed facial gestures and physiological consistency."
+                    isLikelyLiveness = true
+                } else if (faceRatio >= 0.70 && status != "UNRELIABLE" && hasLivingDynamics) {
+                    verdict = "REAL_FACE_VERIFIED"
+                    verdictTitle = "REAL FACE VERIFIED"
+                    verdictDescription = "Live human face verified through confirmed randomized gestures and facial dynamics."
+                    isLikelyLiveness = true
+                } else if (status == "INCONCLUSIVE_MOTION" || status == "INCONCLUSIVE_WEAK_SIGNAL") {
+                    verdict = "INCONCLUSIVE"
+                    verdictTitle = "INCONCLUSIVE — TRY AGAIN"
+                    verdictDescription = "Facial gestures were detected, but camera signals were inconclusive. Please hold steady in good lighting and try again."
+                    isLikelyLiveness = false
+                } else {
+                    verdict = "INCONCLUSIVE"
+                    verdictTitle = "INCONCLUSIVE — TRY AGAIN"
+                    verdictDescription = "Available evidence is insufficient to make a reliable decision. Please try again."
+                    isLikelyLiveness = false
+                }
             }
 
             val totalDurationMs = System.currentTimeMillis() - t0
+            val measuredStageMs = totalLandmarkMs + totalSkinExtractionMs + totalChallengeMs + totalDspMs
+            totalExtractionMs = (totalDurationMs - measuredStageMs).coerceAtLeast(0L)
             val metrics = ProcessingMetrics(
                 totalDurationMs = totalDurationMs,
                 frameExtractionMs = totalExtractionMs,
@@ -428,17 +489,17 @@ class RppgProcessor(private val context: Context) {
 
             Log.i(
                 TAG,
-                "rPPG Processing Timings: total=${totalDurationMs}ms, frames=$totalFrames, " +
-                "facesDetected=$facesDetectedCount, usableSkin=$usableFrames, verdict=$verdictTier, " +
-                "extract=${totalExtractionMs}ms, landmark=${totalLandmarkMs}ms, " +
-                "skinROI=${totalSkinExtractionMs}ms, challenge=${totalChallengeMs}ms, dsp=${totalDspMs}ms"
+                "Liveness Assessment: verdict=$verdict, gestures=$challengesPassed/${challenges.size}, pulse=$status, faceRatio=${String.format("%.2f", faceRatio)}"
             )
 
             return Result(
-                success = (verdictTier == "VERIFIED"),
-                verdictTier = verdictTier,
+                success = true,
                 status = status,
-                estimatedBpm = if (verdictTier == "VERIFIED" || (verdictTier == "INCONCLUSIVE" && hasValidBpm)) psd.bpm else 0.0,
+                verdict = verdict,
+                verdictTitle = verdictTitle,
+                verdictDescription = verdictDescription,
+                spoofReason = spoofReason,
+                estimatedBpm = if (qualityRating != "UNRELIABLE") estimatedBpm else 0.0,
                 signalQuality = qualityRating,
                 usableFrames = usableFrames,
                 totalFrames = totalFrames,
@@ -446,8 +507,8 @@ class RppgProcessor(private val context: Context) {
                 durationSeconds = durationSec,
                 snrDb = snrDb,
                 peakPowerFraction = peakFraction,
-                isLikelyLiveness = (verdictTier == "VERIFIED"),
-                message = message,
+                isLikelyLiveness = isLikelyLiveness,
+                message = pulseMessage,
                 challenges = challengeResults,
                 challengesPassed = challengesPassed,
                 challengesTotal = challenges.size,
@@ -457,7 +518,7 @@ class RppgProcessor(private val context: Context) {
 
         } catch (e: Exception) {
             Log.e(TAG, "Native rPPG processing failed", e)
-            return failureResult("Processing exception: ${e.message}", "RETRY_REQUIRED")
+            return failureResult("Processing exception: ${e.message}")
         } finally {
             try {
                 retriever.release()
@@ -467,137 +528,6 @@ class RppgProcessor(private val context: Context) {
                 landmarker?.close()
             } catch (ignored: Exception) {}
         }
-    }
-
-    /**
-     * Dynamically calibrates face orientation by testing candidate rotations [metadataRotation, 270, 0, 90, 180]
-     * on candidate video frames and selecting the rotation where face landmarks are upright.
-     * Guaranteed to fallback to metadataRotationDeg (or 270) instead of blindly assuming 0deg.
-     */
-    private fun calibrateOrientation(
-        retriever: MediaMetadataRetriever,
-        landmarker: FaceLandmarker,
-        durationMs: Long,
-        metadataRotationDeg: Int,
-        videoW: Int,
-        videoH: Int
-    ): Int {
-        val candidateTimestampsMs = listOf(1000L, 2000L, 3000L, 4000L, 5000L, 6000L, 8000L, 500L, 0L).filter { it <= durationMs }
-        val candidateRotations = listOf(metadataRotationDeg, 270, 0, 90, 180).distinct()
-
-        for (tsMs in candidateTimestampsMs) {
-            var bestRotation = -1
-            var bestVerticalSpan = -1.0f
-
-            for (deg in candidateRotations) {
-                val frame = extractAndTransformFrame(retriever, tsMs * 1000L, deg, targetWidth = TARGET_FRAME_WIDTH, videoW = videoW, videoH = videoH) ?: continue
-                try {
-                    val mpImage = BitmapImageBuilder(frame).build()
-                    val result = landmarker.detect(mpImage)
-                    if (result.faceLandmarks().isNotEmpty()) {
-                        val lm = result.faceLandmarks()[0]
-                        val chinY = lm[CHIN].y()
-                        val glabellaY = lm[GLABELLA].y()
-                        val leftEyeY = lm[LEFT_EYE_OUTER].y()
-                        val rightEyeY = lm[RIGHT_EYE_OUTER].y()
-                        val eyeDiff = abs(leftEyeY - rightEyeY)
-                        val vertSpan = chinY - glabellaY
-
-                        // An upright frontal face has chin below glabella (chinY > glabellaY)
-                        // and horizontally aligned eyes (eyeDiff < 0.20)
-                        if (vertSpan > 0.10f && eyeDiff < 0.20f) {
-                            if (vertSpan > bestVerticalSpan) {
-                                bestVerticalSpan = vertSpan
-                                bestRotation = deg
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Calibration detect error at ${deg}deg: ${e.message}")
-                } finally {
-                    frame.recycle()
-                }
-            }
-
-            if (bestRotation != -1) {
-                Log.i(TAG, "Orientation calibrated: selected rotation = ${bestRotation}deg at ${tsMs}ms (span=$bestVerticalSpan)")
-                return bestRotation
-            }
-        }
-
-        val fallback = if (metadataRotationDeg != 0) metadataRotationDeg else 270
-        Log.w(TAG, "Orientation calibration did not detect upright face in candidate frames. Fallback to: ${fallback}deg")
-        return fallback
-    }
-
-    /**
-     * Extracts a frame at timeUs, applies rotation around center, scales proportionally to target width
-     * (preserving the exact aspect ratio), and guarantees an ARGB_8888 Bitmap for MediaPipe and skin extraction.
-     * Uses hardware downscaled decoding on API 27+ for fast processing.
-     */
-    private fun extractAndTransformFrame(
-        retriever: MediaMetadataRetriever,
-        timeUs: Long,
-        rotationDeg: Int,
-        targetWidth: Int = TARGET_FRAME_WIDTH,
-        videoW: Int = 0,
-        videoH: Int = 0
-    ): Bitmap? {
-        val isTransposed = (rotationDeg == 90 || rotationDeg == 270)
-
-        var rawBitmap: Bitmap? = null
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1 && videoW > 0 && videoH > 0) {
-            try {
-                val reqDecodeW = if (isTransposed) (videoW * targetWidth / videoH) else targetWidth
-                val reqDecodeH = if (isTransposed) targetWidth else (videoH * targetWidth / videoW)
-
-                rawBitmap = retriever.getScaledFrameAtTime(
-                    timeUs,
-                    MediaMetadataRetriever.OPTION_CLOSEST,
-                    reqDecodeW,
-                    reqDecodeH
-                )
-            } catch (e: Exception) {
-                // Fall back to unscaled
-            }
-        }
-
-        if (rawBitmap == null) {
-            rawBitmap = try {
-                retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
-            } catch (e: Exception) {
-                Log.w(TAG, "getFrameAtTime failed at $timeUs us: ${e.message}")
-                null
-            } ?: return null
-        }
-
-        val srcW = rawBitmap.width
-        val srcH = rawBitmap.height
-
-        val effectiveW = if (isTransposed) srcH else srcW
-        val effectiveH = if (isTransposed) srcW else srcH
-
-        val dstW = targetWidth
-        val dstH = (effectiveH * targetWidth) / effectiveW
-
-        val outBitmap = Bitmap.createBitmap(dstW, dstH, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(outBitmap)
-
-        val matrix = Matrix()
-        if (rotationDeg != 0) {
-            matrix.postTranslate(-srcW / 2f, -srcH / 2f)
-            matrix.postRotate(rotationDeg.toFloat())
-            matrix.postTranslate(effectiveW / 2f, effectiveH / 2f)
-        }
-
-        val scaleX = dstW.toFloat() / effectiveW.toFloat()
-        val scaleY = dstH.toFloat() / effectiveH.toFloat()
-        matrix.postScale(scaleX, scaleY)
-
-        val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
-        canvas.drawBitmap(rawBitmap, matrix, paint)
-        rawBitmap.recycle()
-        return outBitmap
     }
 
     /**
@@ -645,6 +575,18 @@ class RppgProcessor(private val context: Context) {
         return mouthWidth / max(1e-4, faceWidth)
     }
 
+    /**
+     * Computes normalized 3D relative depth (nose tip vs mid-cheek contour).
+     * For a real 3D face, the nose tip is in front of cheeks (positive depth).
+     */
+    private fun computeFaceDepth(landmarks: List<NormalizedLandmark>): Double {
+        if (landmarks.size <= maxOf(NOSE_TIP, CHEEK_CONTOUR_LEFT, CHEEK_CONTOUR_RIGHT)) return 0.10
+        val faceWidth = abs(landmarks[CHEEK_CONTOUR_RIGHT].x() - landmarks[CHEEK_CONTOUR_LEFT].x()).toDouble()
+        val midCheekZ = (landmarks[CHEEK_CONTOUR_LEFT].z() + landmarks[CHEEK_CONTOUR_RIGHT].z()).toDouble() / 2.0
+        val noseZ = landmarks[NOSE_TIP].z().toDouble()
+        return (midCheekZ - noseZ) / max(1e-4, faceWidth)
+    }
+
     private fun dist(a: NormalizedLandmark, b: NormalizedLandmark): Double {
         val dx = (a.x() - b.x()).toDouble()
         val dy = (a.y() - b.y()).toDouble()
@@ -671,9 +613,9 @@ class RppgProcessor(private val context: Context) {
                     val avgEar = (leftEar + rightEar) / 2.0
                     earSamples.add(avgEar)
 
-                    if (avgEar < 0.185) {
+                    if (avgEar < 0.19) {
                         blinkStateClosed = true
-                    } else if (blinkStateClosed && avgEar > 0.225) {
+                    } else if (blinkStateClosed && avgEar > 0.22) {
                         blinkCount++
                         blinkStateClosed = false
                     }
@@ -700,82 +642,81 @@ class RppgProcessor(private val context: Context) {
         fun finish(): ChallengeResult {
             return when (challenge.type) {
                 "BLINK" -> {
-                    val earDrop = (earSamples.maxOrNull() ?: 0.28) - (earSamples.minOrNull() ?: 0.28)
-                    val verified = blinkCount >= 1 || earDrop >= 0.05 || (earSamples.minOrNull() ?: 1.0) < 0.19
+                    val earDrop = (earSamples.maxOrNull() ?: 0.3) - (earSamples.minOrNull() ?: 0.3)
+                    val minEar = earSamples.minOrNull() ?: 0.3
+                    val verified = blinkCount >= 1 || (earDrop >= 0.05 && minEar < 0.20)
                     ChallengeResult(
                         id = challenge.id,
                         type = challenge.type,
                         instruction = challenge.instruction,
                         verified = verified,
                         confidence = if (verified) 0.95 else 0.20,
-                        detail = if (verified) "$blinkCount blink(s) verified via bilateral EAR" else "Blink gesture not confirmed ($blinkCount detected)"
+                        detail = if (verified) "Blink completed" else "Blink not completed"
                     )
                 }
                 "SMILE" -> {
                     val maxSmile = smileScores.maxOrNull() ?: 0.0
                     val minSmile = smileScores.minOrNull() ?: 0.0
                     val smileDelta = maxSmile - minSmile
-                    val verified = smileDelta >= 0.035 || maxSmile >= 0.45
+                    val verified = smileDelta >= 0.04
                     ChallengeResult(
                         id = challenge.id,
                         type = challenge.type,
                         instruction = challenge.instruction,
                         verified = verified,
                         confidence = if (verified) 0.90 else 0.25,
-                        detail = if (verified) "Natural smile verified (mouth expansion +${String.format("%.1f", smileDelta * 100)}%)" else "Smile not detected"
+                        detail = if (verified) "Smile completed" else "Smile not completed"
                     )
                 }
                 "TURN_LEFT" -> {
                     val minYaw = yawSamples.minOrNull() ?: 0.0
                     val maxYaw = yawSamples.maxOrNull() ?: 0.0
-                    val yawSpread = maxYaw - minYaw
-                    val verified = yawSpread >= 0.05 || abs(minYaw) >= 0.05 || abs(maxYaw) >= 0.05
+                    val verified = (maxYaw - minYaw) >= 0.055
                     ChallengeResult(
                         id = challenge.id,
                         type = challenge.type,
                         instruction = challenge.instruction,
                         verified = verified,
                         confidence = if (verified) 0.92 else 0.30,
-                        detail = if (verified) "Left head rotation verified" else "Head rotation not detected"
+                        detail = if (verified) "Left head turn completed" else "Left head turn not completed"
                     )
                 }
                 "TURN_RIGHT" -> {
                     val minYaw = yawSamples.minOrNull() ?: 0.0
                     val maxYaw = yawSamples.maxOrNull() ?: 0.0
-                    val yawSpread = maxYaw - minYaw
-                    val verified = yawSpread >= 0.05 || abs(minYaw) >= 0.05 || abs(maxYaw) >= 0.05
+                    val verified = (maxYaw - minYaw) >= 0.055
                     ChallengeResult(
                         id = challenge.id,
                         type = challenge.type,
                         instruction = challenge.instruction,
                         verified = verified,
                         confidence = if (verified) 0.92 else 0.30,
-                        detail = if (verified) "Right head rotation verified" else "Head rotation not detected"
+                        detail = if (verified) "Right head turn completed" else "Right head turn not completed"
                     )
                 }
                 "TILT_UP" -> {
                     val minPitch = pitchSamples.minOrNull() ?: 0.0
                     val maxPitch = pitchSamples.maxOrNull() ?: 0.0
-                    val verified = (maxPitch - minPitch) >= 0.035 || (pitchSamples.isNotEmpty() && minPitch < 0.35)
+                    val verified = (maxPitch - minPitch) >= 0.04
                     ChallengeResult(
                         id = challenge.id,
                         type = challenge.type,
                         instruction = challenge.instruction,
                         verified = verified,
                         confidence = if (verified) 0.88 else 0.25,
-                        detail = if (verified) "Upward head tilt verified" else "Tilt gesture not detected"
+                        detail = if (verified) "Upward head tilt completed" else "Upward head tilt not completed"
                     )
                 }
                 "LOOK_CENTER" -> {
-                    val avgYaw = if (yawSamples.isNotEmpty()) yawSamples.map { abs(it) }.average() else 1.0
-                    val verified = avgYaw < 0.09 && yawSamples.isNotEmpty()
+                    val avgYaw = yawSamples.map { abs(it) }.average()
+                    val verified = avgYaw < 0.075 && yawSamples.isNotEmpty()
                     ChallengeResult(
                         id = challenge.id,
                         type = challenge.type,
                         instruction = challenge.instruction,
                         verified = verified,
                         confidence = if (verified) 0.95 else 0.30,
-                        detail = if (verified) "Frontal camera gaze verified" else "Face was not centered"
+                        detail = if (verified) "Face centered" else "Face not centered"
                     )
                 }
                 else -> {
@@ -785,7 +726,7 @@ class RppgProcessor(private val context: Context) {
                         instruction = challenge.instruction,
                         verified = false,
                         confidence = 0.0,
-                        detail = "Instruction shown (unverified)"
+                        detail = "Gesture not completed"
                     )
                 }
             }
@@ -793,39 +734,45 @@ class RppgProcessor(private val context: Context) {
     }
 
     /**
-     * Selects the most stable continuous window of duration >= 4.0s for clean rPPG pulse estimation.
-     * Evaluates candidate window sizes (8.0s, 6.0s, 5.0s, 4.0s) and chooses the window with lowest head motion
-     * and highest valid skin ROI coverage.
+     * Selects the most stable continuous window of duration 6.0s - 8.0s for clean rPPG pulse estimation.
+     * Prefers the scheduled still period in the latter half of the recording.
      */
     private fun selectStablePulseWindow(
         samples: List<DoubleArray?>,
         yaws: List<Double>,
         fps: Double
     ): List<DoubleArray?>? {
-        val windowDurations = listOf(8.0, 6.0, 5.0, 4.0)
-
-        for (duration in windowDurations) {
-            val windowFrames = (duration * fps).roundToInt()
+        val targetDurations = listOf(8.0, 7.0, 6.0)
+        for (dur in targetDurations) {
+            val windowFrames = (dur * fps).roundToInt()
             if (samples.size < windowFrames) continue
 
             var bestStartIndex = -1
             var lowestMotionScore = Double.MAX_VALUE
-
             val step = max(1, (0.5 * fps).roundToInt())
-            for (i in 0..(samples.size - windowFrames) step step) {
+
+            // Search starting from the later part of the clip (where LOOK_CENTER still window is scheduled)
+            for (i in (samples.size - windowFrames) downTo 0 step step) {
                 var validCount = 0
                 var yawVarSum = 0.0
+                var currentGap = 0
+                var longestGap = 0
                 for (j in i until (i + windowFrames)) {
-                    if (samples[j] != null) validCount++
+                    if (samples[j] != null) {
+                        validCount++
+                        currentGap = 0
+                    } else {
+                        currentGap++
+                        longestGap = max(longestGap, currentGap)
+                    }
                     val y = if (j < yaws.size) yaws[j] else 0.0
                     yawVarSum += abs(y)
                 }
 
                 val validRatio = validCount.toDouble() / windowFrames
-                // At least 65% valid tracked face frames in this window
-                if (validRatio >= 0.65) {
-                    val motionScore = (yawVarSum / windowFrames) + (1.0 - validRatio) * 0.5
-                    if (motionScore < lowestMotionScore) {
+                if (validRatio >= 0.90 && longestGap <= 3) {
+                    val motionScore = yawVarSum / windowFrames
+                    if (motionScore < 0.085 && motionScore < lowestMotionScore) {
                         lowestMotionScore = motionScore
                         bestStartIndex = i
                     }
@@ -833,11 +780,9 @@ class RppgProcessor(private val context: Context) {
             }
 
             if (bestStartIndex >= 0) {
-                Log.i(TAG, "Selected stable pulse window: startIdx=$bestStartIndex (${String.format("%.1f", bestStartIndex / fps)}s), duration=${duration}s, motionScore=${String.format("%.3f", lowestMotionScore)}")
                 return samples.subList(bestStartIndex, bestStartIndex + windowFrames)
             }
         }
-
         return null
     }
 
@@ -1011,11 +956,19 @@ class RppgProcessor(private val context: Context) {
         return list
     }
 
-    private fun failureResult(msg: String, verdictTier: String = "RETRY_REQUIRED"): Result {
+    /** Centering checks are setup, not proof of life; every randomized action must pass. */
+    private fun passesRandomizedActions(results: List<ChallengeResult>): Boolean {
+        val randomizedActions = results.filter { it.type != "LOOK_CENTER" }
+        return randomizedActions.size >= 2 && randomizedActions.all { it.verified }
+    }
+
+    private fun failureResult(msg: String): Result {
         return Result(
             success = false,
-            verdictTier = verdictTier,
-            status = if (verdictTier == "RETRY_REQUIRED") "RETRY_REQUIRED" else "ERROR",
+            status = "ERROR",
+            verdict = "VERIFICATION_FAILED",
+            verdictTitle = "VERIFICATION FAILED — TRY AGAIN",
+            verdictDescription = msg,
             estimatedBpm = 0.0,
             signalQuality = "UNRELIABLE",
             usableFrames = 0,

@@ -2,6 +2,12 @@ import { NativeModules, Platform } from 'react-native';
 
 const { RppgModule } = NativeModules;
 
+export type LivenessVerdict =
+  | 'REAL_FACE_VERIFIED'
+  | 'SPOOF_DETECTED'
+  | 'VERIFICATION_FAILED'
+  | 'INCONCLUSIVE';
+
 export type VerdictTier = 'VERIFIED' | 'RETRY_REQUIRED' | 'INCONCLUSIVE' | 'FAILED';
 
 export type RppgStatus =
@@ -53,6 +59,10 @@ export interface ProcessingMetrics {
 
 export interface RppgResult {
   success: boolean;
+  verdict: LivenessVerdict;
+  verdictTitle: string;
+  verdictDescription: string;
+  spoofReason?: string;
   verdictTier: VerdictTier;
   status: RppgStatus;
   estimatedBpm: number;
@@ -95,6 +105,9 @@ class RppgService {
     if (!this.isAvailable()) {
       return {
         success: false,
+        verdict: 'VERIFICATION_FAILED',
+        verdictTitle: 'VERIFICATION FAILED — TRY AGAIN',
+        verdictDescription: 'Native processing module is only available on Android native builds.',
         verdictTier: 'RETRY_REQUIRED',
         status: 'ERROR',
         estimatedBpm: 0,
@@ -118,10 +131,31 @@ class RppgService {
       } else {
         result = await RppgModule.processVideo(videoUri);
       }
+
+      // Ensure verdict is assigned even if older native build is running
+      if (!result.verdict) {
+        if (result.challengeLivenessPass && (result.status === 'CONFIRMED_PULSE' || result.faceRatio >= 0.70)) {
+          result.verdict = 'REAL_FACE_VERIFIED';
+          result.verdictTitle = 'REAL FACE VERIFIED';
+          result.verdictDescription = 'Live human face verified through confirmed facial gestures.';
+        } else if (result.faceRatio < 0.45 || !result.challengeLivenessPass) {
+          result.verdict = 'VERIFICATION_FAILED';
+          result.verdictTitle = 'VERIFICATION FAILED — TRY AGAIN';
+          result.verdictDescription = 'Required gestures were not completed or face was unclear.';
+        } else {
+          result.verdict = 'INCONCLUSIVE';
+          result.verdictTitle = 'INCONCLUSIVE — TRY AGAIN';
+          result.verdictDescription = 'Signals were inconclusive. Please try again in good lighting.';
+        }
+      }
+
       return result;
     } catch (error: any) {
       return {
         success: false,
+        verdict: 'VERIFICATION_FAILED',
+        verdictTitle: 'VERIFICATION FAILED — TRY AGAIN',
+        verdictDescription: error?.message || 'Processing failed. Please try again.',
         verdictTier: 'RETRY_REQUIRED',
         status: 'ERROR',
         estimatedBpm: 0,

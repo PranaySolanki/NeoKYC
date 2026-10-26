@@ -39,6 +39,27 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+!/android/
+/android/*
+!/android/app/
+/android/app/*
+!/android/app/src/
+/android/app/src/*
+!/android/app/src/test/
+!/android/app/src/test/**
+!/android/app/src/main/
+/android/app/src/main/*
+!/android/app/src/main/java/
+/android/app/src/main/java/*
+!/android/app/src/main/java/com/
+/android/app/src/main/java/com/*
+!/android/app/src/main/java/com/siddhi_2305/
+/android/app/src/main/java/com/siddhi_2305/*
+!/android/app/src/main/java/com/siddhi_2305/zerotrustekyc/
+/android/app/src/main/java/com/siddhi_2305/zerotrustekyc/*
+!/android/app/src/main/java/com/siddhi_2305/zerotrustekyc/rppg/
+/android/app/src/main/java/com/siddhi_2305/zerotrustekyc/rppg/*
+!/android/app/src/main/java/com/siddhi_2305/zerotrustekyc/rppg/VideoFrameDecoder.kt
 
 # Python & rPPG development artifacts
 RPPG/.venv/
