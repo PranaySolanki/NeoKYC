@@ -531,11 +531,9 @@ class F3NetInferenceService:
         self, crop: Image.Image, raw_fake_prob: float
     ) -> Tuple[float, float]:
         """
-        Calibrates the raw deepfake score by analyzing organic face biological properties,
-        frequency spectrum continuity, and skin chromaticity.
-
-        Bridges the domain gap between synthetic pipeline verification checkpoints
-        and real-world optical camera captures.
+        Calibrates the deepfake score by analyzing organic face biological properties,
+        frequency spectrum continuity, skin chromaticity, and presentation attack (PAD)
+        indicators (such as 2D screen moiré, LCD raster lattice, and flat paper printouts).
         """
         import cv2
         import numpy as np
@@ -551,46 +549,87 @@ class F3NetInferenceService:
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
         h, w = gray.shape
 
-        # 1. Skin chromaticity validation (YCbCr cluster)
+        # 1. Skin chromaticity validation (YCbCr cluster for authentic human melanin)
         ycrcb = cv2.cvtColor(bgr, cv2.COLOR_BGR2YCrCb)
         cr = ycrcb[:, :, 1]
         cb = ycrcb[:, :, 2]
         skin_mask = (cr >= 125) & (cr <= 185) & (cb >= 70) & (cb <= 140)
         skin_ratio = float(np.mean(skin_mask.astype(float)))
 
-        # 2. Laplacian texture variance (organic micro-edges vs blur / synthetic noise)
+        # 2. Laplacian texture variance (micro-texture sharpness vs blur / synthetic noise)
         lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
-        # 3. 2D-FFT frequency spectrum roll-off
+        # 3. Dynamic range / Luminance depth (real 3D facial relief vs flat 2D photograph)
+        contrast_std = float(np.std(gray))
+
+        # 4. Specular glass glare (screen reflection on laptops, tablets, or laminated photos)
+        glare_ratio = float(np.mean(gray >= 252))
+
+        # 5. 2D-FFT frequency spectrum analysis:
+        # Screens (monitors/tablets) exhibit sharp periodic lattice spikes (moiré) in high frequencies.
         f = np.fft.fftshift(np.fft.fft2(gray))
         mag = 20 * np.log(np.abs(f) + 1e-8)
+        abs_f = np.abs(f)
         cy, cx = h // 2, w // 2
         y, x = np.ogrid[:h, :w]
         dist = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+
+        # Spectral energy decay (low vs high frequencies)
         low_mag = float(np.mean(mag[dist <= min(h, w) * 0.15]))
         high_mag = float(np.mean(mag[dist > min(h, w) * 0.35]))
         freq_falloff = low_mag - high_mag
 
-        # 4. Authentic Human Face Heuristic:
-        # A live selfie camera capture of a real human exhibits:
-        # - Substantial skin chromaticity (skin_ratio >= 0.20)
-        # - Organic skin texture (45 <= lap_var <= 2200)
-        # - Natural frequency falloff (freq_falloff >= -1.0)
-        is_natural_face = (
-            skin_ratio >= 0.20
-            and 45.0 <= lap_var <= 2200.0
-            and freq_falloff >= -1.0
+        # High-frequency Peak-to-Average Power Ratio (PAPR) for screen moiré detection
+        hf_mask = (dist >= min(h, w) * 0.18) & (dist <= min(h, w) * 0.48)
+        hf_vals = abs_f[hf_mask]
+        hf_papr = float(np.max(hf_vals) / (np.mean(hf_vals) + 1e-6)) if len(hf_vals) > 0 else 0.0
+
+        # Subpixel chromatic aberration (LCD/OLED subpixel grid effect when captured by camera)
+        r_chan = np_crop[:, :, 0].astype(float)
+        b_chan = np_crop[:, :, 2].astype(float)
+        rb_diff = np.abs(r_chan - b_chan)
+        rb_high_freq = float(cv2.Laplacian(rb_diff, cv2.CV_64F).var())
+
+        # --- PRESENTATION ATTACK & SPOOF DETECTION HEURISTICS ---
+        # A. Screen Replay (Laptop / Tablet / Phone display):
+        # Characterized by periodic moiré frequency spikes, high subpixel chromatic gradient, or flat glass glare
+        is_screen_moire = (hf_papr > 32.0) or (rb_high_freq > 1800.0 and lap_var > 150.0)
+        is_screen_glare = (glare_ratio > 0.025 and lap_var > 120.0)
+
+        # B. 2D Flat Paper / Passport Size Photo Replay:
+        # Characterized by compressed dynamic range (flat 2D illumination without 3D depth relief)
+        # or out-of-focus paper capture / printer halftone dot noise
+        is_flat_2d_photo = (contrast_std < 24.0 and skin_ratio >= 0.15) or (lap_var < 42.0) or (lap_var > 2600.0)
+
+        # C. Non-face or deficient skin chromaticity
+        is_insufficient_skin = (skin_ratio < 0.18)
+
+        # Combined presentation attack indicator
+        is_presentation_spoof = (
+            is_screen_moire
+            or is_screen_glare
+            or is_flat_2d_photo
+            or is_insufficient_skin
+            or freq_falloff < -1.0
         )
 
-        if is_natural_face:
-            # Calibrated real face probability (natural live camera selfie)
-            real_confidence = 0.94 + 0.05 * min(1.0, max(0.0, (skin_ratio - 0.20) / 0.4))
-            prob_fake = 1.0 - real_confidence
-            prob_real = real_confidence
-        else:
-            # Synthetic noise, flat block, screen moiré, or manipulated artifact
-            prob_fake = max(raw_fake_prob, 0.92)
+        if is_presentation_spoof:
+            # Flagged as 2D presentation attack (Screen / Passport photo / Synthetic grid)
+            prob_fake = max(raw_fake_prob, 0.94)
             prob_real = 1.0 - prob_fake
+        else:
+            # Genuine 3D live human face in front of the camera.
+            # Blend natural live biometric confidence with the trained neural network score.
+            live_confidence = 0.92 + 0.07 * min(1.0, max(0.0, (skin_ratio - 0.20) / 0.4))
+
+            # If the F3-Net model flagged a deepfake anomaly, respect the model's warning;
+            # otherwise, confirm as a genuine live capture.
+            if raw_fake_prob >= 0.70:
+                prob_fake = raw_fake_prob
+                prob_real = 1.0 - prob_fake
+            else:
+                prob_fake = min(raw_fake_prob, 1.0 - live_confidence)
+                prob_real = 1.0 - prob_fake
 
         return prob_real, prob_fake
 

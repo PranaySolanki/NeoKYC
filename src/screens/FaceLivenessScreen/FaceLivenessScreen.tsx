@@ -293,10 +293,10 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({ onNaviga
                       <View style={[styles.verdictBadge, isReal ? styles.verdictReal : styles.verdictFake]}>
                         <Text style={styles.verdictIcon}>{isReal ? '🛡️' : '🚨'}</Text>
                         <Text style={styles.verdictTitle}>
-                          {isReal ? 'VERIFIED REAL FACE' : 'DEEPFAKE DETECTED'}
+                          {isReal ? 'VERIFIED LIVE PERSON' : 'SPOOF / DEEPFAKE DETECTED'}
                         </Text>
                         <Text style={styles.verdictScore}>
-                          {isReal ? `${realPct}% Real` : `${fakePct}% Manipulated`}
+                          {isReal ? `${realPct}% Authentic Live` : `${fakePct}% Spoof / Manipulated`}
                         </Text>
                       </View>
 
