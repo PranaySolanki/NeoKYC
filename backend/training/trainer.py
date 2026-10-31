@@ -33,7 +33,12 @@ class Trainer:
         set_seed(config.seed)
 
         # Device determination
-        self.device = torch.device("cuda" if torch.cuda.is_available() and config.device != "cpu" else "cpu")
+        if config.device == "cpu":
+            self.device = torch.device("cpu")
+        elif config.device == "cuda":
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:  # "auto" or default
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Initialize or receive model
         if model is not None:

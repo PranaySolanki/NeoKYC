@@ -201,4 +201,67 @@ class F3NetEvaluator:
 * True Positives: **{cm_v.get('tp', 0)}** | True Negatives: **{cm_v.get('tn', 0)}**
 * False Positives: **{cm_v.get('fp', 0)}** | False Negatives: **{cm_v.get('fn', 0)}**
 """
-        return md
+
+def main():
+    import argparse
+    from ..data.faceforensics import create_ff_dataloaders
+
+    parser = argparse.ArgumentParser(description="Evaluate F3-Net model on FaceForensics++ benchmark")
+    parser.add_argument("--checkpoint", type=str, required=True, help="Path to trained checkpoint (.pth)")
+    parser.add_argument("--data_root", type=str, default="data/FaceForensics++", help="Path to FF++ root")
+    parser.add_argument("--split", type=str, default="test", choices=["train", "val", "test"], help="Split to evaluate")
+    parser.add_argument("--compression", type=str, default="c40", choices=["c40", "c23", "raw"], help="Compression level")
+    parser.add_argument("--calibrate_on", type=str, default="val", choices=["val", "none"], help="Calibrate threshold on val split")
+    parser.add_argument("--output", type=str, default="evaluation_results.json", help="Path to output JSON")
+    parser.add_argument("--batch_size", type=int, default=16, help="Evaluation batch size")
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Loading checkpoint from: {args.checkpoint}")
+    checkpoint = torch.load(args.checkpoint, map_location=device)
+
+    config_dict = checkpoint.get("config", {})
+    mode = config_dict.get("mode", "Mix")
+    num_classes = config_dict.get("num_classes", 2)
+    img_size = config_dict.get("img_size", 299)
+    use_learnable_filters = config_dict.get("use_learnable_filters", True)
+
+    model = F3Net(
+        num_classes=num_classes,
+        mode=mode,
+        img_size=img_size,
+        use_learnable_filters=use_learnable_filters,
+    ).to(device)
+
+    model.load_state_dict(checkpoint["model_state_dict"])
+    evaluator = F3NetEvaluator(model=model, device=device)
+
+    train_loader, val_loader, test_loader = create_ff_dataloaders(
+        root_dir=args.data_root,
+        batch_size=args.batch_size,
+        compression=args.compression,
+    )
+
+    threshold = 0.5
+    calibrated = False
+    if args.calibrate_on == "val":
+        print("Calibrating decision threshold on validation set...")
+        threshold, _ = evaluator.calibrate_on_validation(val_loader)
+        calibrated = True
+        print(f"Optimal decision threshold calibrated to: {threshold:.4f}")
+
+    target_loader = {"train": train_loader, "val": val_loader, "test": test_loader}[args.split]
+    print(f"Evaluating {args.split} split with threshold={threshold:.4f}...")
+    results = evaluator.evaluate_split(target_loader, threshold=threshold)
+
+    report_md = evaluator.generate_markdown_report(results, split_name=args.split.capitalize(), is_calibrated=calibrated)
+    print("\n" + report_md)
+
+    with open(args.output, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"Saved evaluation results to {args.output}")
+
+
+if __name__ == "__main__":
+    main()
+

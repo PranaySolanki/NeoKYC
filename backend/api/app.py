@@ -64,7 +64,24 @@ def create_app(config: DeepfakeServiceConfig = None) -> Flask:
         )
 
     app = Flask(__name__)
+    app.url_map.strict_slashes = False
     app.config["MAX_CONTENT_LENGTH"] = config.max_upload_bytes
+
+    @app.after_request
+    def after_request(response):
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization,Accept"
+        response.headers["Access-Control-Allow-Methods"] = "GET,PUT,POST,DELETE,OPTIONS"
+        return response
+
+    @app.before_request
+    def handle_preflight():
+        if request.method == "OPTIONS":
+            response = app.make_default_options_response()
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization,Accept"
+            response.headers["Access-Control-Allow-Methods"] = "GET,PUT,POST,DELETE,OPTIONS"
+            return response
 
     # Initialize the inference service (loads model and checkpoint)
     service = F3NetInferenceService(config)
@@ -74,6 +91,25 @@ def create_app(config: DeepfakeServiceConfig = None) -> Flask:
         deepfake_threshold=config.decision_threshold,
     )
     ekyc_pipeline = EKYCPipeline(deepfake_service=service, policy=ekyc_policy)
+
+    # ------------------------------------------------------------------
+    # GET / (Root Health Check)
+    # ------------------------------------------------------------------
+    @app.route("/", methods=["GET"])
+    def root_status():
+        """Root API status and discovery endpoint."""
+        return jsonify({
+            "service": "NeoKYC Backend API",
+            "status": "online",
+            "version": "1.0.0",
+            "endpoints": {
+                "deepfake_health": "/api/deepfake/health",
+                "deepfake_predict_image": "/api/deepfake/predict-image",
+                "deepfake_predict_video": "/api/deepfake/predict-video",
+                "ekyc_health": "/api/ekyc/health",
+                "ekyc_verify": "/api/ekyc/verify",
+            },
+        }), 200
 
     # ------------------------------------------------------------------
     # GET /api/deepfake/health

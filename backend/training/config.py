@@ -57,7 +57,7 @@ class TrainingConfig:
     log_freq: int = 20
     seed: int = 42
     resume_checkpoint: Optional[str] = None
-    device: str = "cpu"  # Automatically overridden if CUDA is available
+    device: str = "auto"  # Automatically uses CUDA if available, or 'cpu' / 'cuda'
 
     def resolve_output_dir(self) -> str:
         """Resolves output_dir relative to the repository root."""

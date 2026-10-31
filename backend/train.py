@@ -92,6 +92,7 @@ def main():
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
     parser.add_argument("--pretrained_xception", type=str, default=None, help="Path to ImageNet-pretrained Xception weights (.pth)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"], help="Hardware device")
     parser.add_argument("--num_workers", type=int, default=2, help="Data loader workers")
 
     args = parser.parse_args()
@@ -127,6 +128,7 @@ def main():
         resume_checkpoint=args.resume,
         pretrained_xception_path=args.pretrained_xception,
         seed=args.seed,
+        device=args.device,
         num_workers=args.num_workers,
     )
 
