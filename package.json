@@ -10,7 +10,9 @@
   },
   "dependencies": {
     "@infinitered/react-native-mlkit-text-recognition": "^5.0.1",
+    "@react-native-async-storage/async-storage": "^3.1.1",
     "@react-navigation/native": "^7.3.17",
+    "base-64": "^1.0.0",
     "base64-arraybuffer": "^1.0.2",
     "expo": "~54.0.37",
     "expo-camera": "~17.0.10",
@@ -28,7 +30,8 @@
     "react-native-vision-camera": "^4.7.3",
     "react-native-vision-camera-face-detector": "^1.10.2",
     "react-native-webview": "13.15.0",
-    "react-native-worklets-core": "^1.6.3"
+    "react-native-worklets-core": "^1.6.3",
+    "upng-js": "^2.1.0"
   },
   "devDependencies": {
     "@babel/plugin-proposal-nullish-coalescing-operator": "^7.18.6",
@@ -37,7 +40,9 @@
     "@babel/plugin-transform-shorthand-properties": "^7.29.7",
     "@babel/plugin-transform-template-literals": "^7.29.7",
     "@babel/preset-typescript": "^7.29.7",
+    "@types/base-64": "^1.0.2",
     "@types/react": "~19.1.0",
+    "@types/upng-js": "^2.1.5",
     "babel-preset-expo": "~54.0.10",
     "typescript": "~5.9.2"
   },

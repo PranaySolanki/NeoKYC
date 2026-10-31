@@ -174,7 +174,17 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({ onNaviga
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Liveness check</Text>
+      {/* Top Header with Back Button */}
+      <View style={styles.headerBar}>
+        <TouchableOpacity
+          style={styles.backButton}
+          onPress={() => onNavigate?.('Home')}
+        >
+          <Text style={styles.backButtonText}>← Back</Text>
+        </TouchableOpacity>
+        <Text style={styles.title}>Liveness check</Text>
+        <View style={styles.headerSpacer} />
+      </View>
       <Text style={styles.subtitle}>Complete all three live actions to continue.</Text>
 
       <View style={styles.cameraFrame}>
@@ -224,7 +234,30 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({ onNaviga
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0F172A', paddingHorizontal: 20, paddingTop: 68, paddingBottom: 24 },
   center: { flex: 1, backgroundColor: '#0F172A', alignItems: 'center', justifyContent: 'center', padding: 28 },
-  title: { color: '#F8FAFC', fontSize: 23, fontWeight: '800', marginBottom: 6 },
+  headerBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    marginBottom: 6,
+  },
+  backButton: {
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  backButtonText: {
+    color: '#38BDF8',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  headerSpacer: {
+    width: 60,
+  },
+  title: { color: '#F8FAFC', fontSize: 21, fontWeight: '800', textAlign: 'center' },
   subtitle: { color: '#94A3B8', fontSize: 14, lineHeight: 20, marginBottom: 18 },
   body: { color: '#CBD5E1', fontSize: 14, lineHeight: 21 },
   cameraFrame: { width: '100%', height: 350, borderRadius: 20, overflow: 'hidden', backgroundColor: '#020617', borderWidth: 1, borderColor: '#334155' },
@@ -246,3 +279,5 @@ const styles = StyleSheet.create({
   secondaryButton: { padding: 12, marginTop: 2 },
   secondaryButtonText: { color: '#94A3B8', fontSize: 13, fontWeight: '700' },
 });
+
+export default FaceLivenessScreen;

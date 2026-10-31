@@ -1,77 +1,82 @@
 import React, { useState } from 'react';
-import { StyleSheet, View, StatusBar, TouchableOpacity, Text } from 'react-native';
-import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { StyleSheet, SafeAreaView, StatusBar } from 'react-native';
+import { ModelProvider } from './src/assets/models/ModelContext';
 import {
   HomeScreen,
   DocumentScanScreen,
   FaceLivenessScreen,
   ResultScreen,
+  FaceMatchingHubScreen,
+  RegisterFaceScreen,
+  VerifyFaceScreen,
 } from './src/screens';
-import RegisterFaceScreen from './src/screens/RetinaFace+ArcFace/RegisterFaceScreen';
+
+export type ScreenName =
+  | 'Home'
+  | 'DocumentScan'
+  | 'FaceLiveness'
+  | 'Result'
+  | 'FaceMatchingHub'
+  | 'RegisterFace'
+  | 'VerifyFace';
 
 export default function App() {
-  const [currentScreen, setCurrentScreen] = useState<string>('Home');
+  const [currentScreen, setCurrentScreen] = useState<ScreenName>('Home');
+  const [routeParams, setRouteParams] = useState<Record<string, unknown>>({});
 
-  const renderScreen = () => {
+  const navigateTo = (screen: string, params?: Record<string, unknown>) => {
+    if (params) {
+      setRouteParams(params);
+    }
+    setCurrentScreen(screen as ScreenName);
+  };
+
+  const renderCurrentScreen = () => {
     switch (currentScreen) {
-      case 'DocumentScan':
-        return <DocumentScanScreen onNavigate={setCurrentScreen} />;
-      case 'FaceLiveness':
-        return <FaceLivenessScreen onNavigate={setCurrentScreen} />;
-      case 'Result':
-        return <ResultScreen />;
-      case 'RegisterFace':
-        return <RegisterFaceScreen onNavigate={setCurrentScreen} />;
+      // 1. Main Home Screen
       case 'Home':
+        return <HomeScreen onNavigate={navigateTo} />;
+
+      // 2. ID / Document Scanning Flow
+      case 'DocumentScan':
+        return <DocumentScanScreen onNavigate={navigateTo} />;
+
+      // 3. Face Liveness Flow (Passes down any OCR/Document data from Step 2)
+      case 'FaceLiveness':
+        return <FaceLivenessScreen onNavigate={navigateTo} />;
+
+      // 4. Verification / Results Screen
+      // case 'Result':
+      //   return <ResultScreen onNavigate={navigateTo} routeParams={routeParams} />;
+
+      // 5. Offline Biometrics Hub
+      case 'FaceMatchingHub':
+        return <FaceMatchingHubScreen onNavigate={navigateTo} />;
+
+      case 'RegisterFace':
+        return <RegisterFaceScreen onNavigate={navigateTo} />;
+
+      case 'VerifyFace':
+        return <VerifyFaceScreen onNavigate={navigateTo} />;
+
       default:
-        return <HomeScreen onNavigate={setCurrentScreen} />;
+        return <HomeScreen onNavigate={navigateTo} />;
     }
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" />
-
-      {/* Render Back Button on secondary screens */}
-      {currentScreen !== 'Home' && (
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => setCurrentScreen('Home')}
-        >
-          <Text style={styles.backButtonText}>← Back to Home</Text>
-        </TouchableOpacity>
-      )}
-
-      <View style={styles.content}>
-        {renderScreen()}
-      </View>
+    <SafeAreaView style={styles.rootContainer}>
+      <StatusBar barStyle="light-content" backgroundColor="#121212" />
+      <ModelProvider>
+        {renderCurrentScreen()}
+      </ModelProvider>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  rootContainer: {
     flex: 1,
-    backgroundColor: '#0F172A',
-  },
-  content: {
-    flex: 1,
-  },
-  backButton: {
-    position: 'absolute',
-    top: 50,
-    left: 20,
-    zIndex: 10,
-    backgroundColor: '#1E293B',
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  backButtonText: {
-    color: '#38BDF8',
-    fontSize: 14,
-    fontWeight: '600',
+    backgroundColor: '#121212',
   },
 });
