@@ -1,0 +1,25 @@
+# NeoKYC eKYC Verification & F³-Net Deepfake Detection Platform
+# Production & Development Python Dependencies
+# Environment: Python 3.10+ (tested and verified on Python 3.13.6 on Windows CPU environment)
+
+# Core Deep Learning Framework
+# Note: On CPU-only environments: pip install torch --index-url https://download.pytorch.org/whl/cpu
+#       On CUDA GPU environments: pip install torch --index-url https://download.pytorch.org/whl/cu121
+torch>=2.2.0
+
+# REST API & Web Service Layer
+Flask>=3.0.0
+Werkzeug>=3.0.0
+
+# Scientific Computing & Evaluation Metrics
+numpy>=1.26.0
+scipy>=1.11.0
+scikit-learn>=1.3.0
+
+# Computer Vision & Image Processing
+# Note: opencv-python-headless provides full cv2 with DNN (YuNet FaceDetectorYN) and video decoding
+opencv-python-headless>=4.8.0
+pillow>=10.0.0
+
+# Terminal & Progress Monitoring
+tqdm>=4.66.0

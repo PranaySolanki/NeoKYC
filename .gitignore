@@ -39,3 +39,24 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Python & virtual environment
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# PyTorch checkpoints and weights
+checkpoints/
+*.pth
+*.pt
+!backend/_models/*.onnx
+
+# Datasets and large media files
+data/
+*.mp4
+*.avi
+*.mov
+
