@@ -8,37 +8,39 @@ import {
   Alert,
   Dimensions,
   Image,
-  TextInput,
-  KeyboardAvoidingView,
-  Platform,
   ScrollView,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Crypto from 'expo-crypto';
 import { useModels } from '../../assets/models/ModelContext';
 import { parseRetinaFaceOutputs, FaceDetection } from '../RetinaFace+ArcFace/utils/RetinaFace/retinafaceParser';
 import { preprocessPhotoForRetinaFace } from '../RetinaFace+ArcFace/utils/RetinaFace/imagePreprocess';
 import { preprocessFaceForArcFace } from '../RetinaFace+ArcFace/utils/ArcFace/arcfacePreprocess';
-import { saveFaceRecord } from '../../utils/storage';
+import { supabase } from '../../services/supabase';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const SQUARE_SIZE = SCREEN_WIDTH * 0.85;
 
-interface RegisterFaceScreenProps {
-  onNavigate?: (screenName: string) => void;
+export interface RegisterFaceScreenProps {
+  onNavigate?: (screenName: string, params?: Record<string, unknown>) => void;
+  applicantData?: {
+    name: string | null;
+    dob: string | null;
+    gender: string | null;
+    id_number: string | null;
+  };
 }
 
-export function RegisterFaceScreen({ onNavigate }: RegisterFaceScreenProps) {
+export function RegisterFaceScreen({ onNavigate, applicantData }: RegisterFaceScreenProps) {
   const cameraRef = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
 
-  // Preloaded models from root ModelContext
   const { retinaModel, arcfaceModel } = useModels();
 
   const [status, setStatus] = useState<string>('Center your face in the square');
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [detection, setDetection] = useState<FaceDetection | null>(null);
   const [previewUri, setPreviewUri] = useState<string | null>(null);
-  const [userName, setUserName] = useState<string>('');
 
   const handleCaptureAndDetect = async () => {
     if (isProcessing || !cameraRef.current) return;
@@ -66,7 +68,6 @@ export function RegisterFaceScreen({ onNavigate }: RegisterFaceScreenProps) {
         photo.height
       );
 
-      // Freeze on current crop
       setPreviewUri(croppedUri);
 
       const outputs = await retinaModel.run([inputTensor.buffer as ArrayBuffer]);
@@ -79,9 +80,8 @@ export function RegisterFaceScreen({ onNavigate }: RegisterFaceScreenProps) {
 
       if (result) {
         setDetection(result);
-        setStatus(`Face detected (${(result.score * 100).toFixed(1)}%)! Enter name below.`);
+        setStatus(`Face detected (${(result.score * 100).toFixed(1)}%)! Ready to enroll.`);
       } else {
-        // Face detection failed: clear preview and prompt immediate retake
         setDetection(null);
         setPreviewUri(null);
         setStatus('No face detected. Please ensure good lighting and try again.');
@@ -97,12 +97,35 @@ export function RegisterFaceScreen({ onNavigate }: RegisterFaceScreenProps) {
     }
   };
 
-  const handleRegister = async () => {
-    if (!userName.trim()) {
-      Alert.alert('Name Required', 'Please enter a name for this face record.');
-      return;
-    }
+  const formatToISODate = (dateStr: string | null | undefined): string | null => {
+  if (!dateStr) return null;
 
+  const cleaned = dateStr.trim();
+
+  // Matches DD/MM/YYYY or DD-MM-YYYY
+  const dmyMatch = cleaned.match(/^(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})$/);
+  if (dmyMatch) {
+    const day = dmyMatch[1].padStart(2, '0');
+    const month = dmyMatch[2].padStart(2, '0');
+    const year = dmyMatch[3];
+    return `${year}-${month}-${day}`; // Converts 15/02/2003 -> 2003-02-15
+  }
+
+  // Matches single 4-digit Year of Birth (e.g., 2003 -> 2003-01-01)
+  const yobMatch = cleaned.match(/^(\d{4})$/);
+  if (yobMatch) {
+    return `${yobMatch[1]}-01-01`;
+  }
+
+  // If already YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(cleaned)) {
+    return cleaned;
+  }
+
+  return null;
+};
+
+  const handleRegister = async () => {
     if (!detection || !previewUri) return;
 
     if (!arcfaceModel) {
@@ -127,16 +150,41 @@ export function RegisterFaceScreen({ onNavigate }: RegisterFaceScreenProps) {
         throw new Error(`Invalid embedding size: ${embedding.length} (expected 512)`);
       }
 
-      await saveFaceRecord(userName, embedding);
+      setStatus('Computing secure hash and saving...');
 
-      Alert.alert('Success!', `Face registered successfully for "${userName.trim()}".`, [
+      const rawId = applicantData?.id_number || 'UNKNOWN_ID';
+      const idSha256 = await Crypto.digestStringAsync(
+        Crypto.CryptoDigestAlgorithm.SHA256,
+        rawId
+      );
+
+      const timestamp = new Date().toISOString();
+      const { error } = await supabase.from('person_entries').insert([
+        {
+          //date_of_birth: applicantData?.dob || null,
+          full_name:applicantData?.name||null,
+          date_of_birth: formatToISODate(applicantData?.dob),
+          gender: applicantData?.gender || null,
+          aadhaar_number: idSha256,
+          face_coordinates: Array.from(embedding),
+          created_at: timestamp,
+          last_referenced_at: timestamp,
+        },
+      ]);
+
+      if (error) {
+        throw new Error(error.message);
+      }
+
+      Alert.alert('Success!', 'User registered successfully in database.', [
         {
           text: 'OK',
-          onPress: () => onNavigate?.('FaceMatchingHub'),
+          onPress: () => onNavigate?.('HomeDash'),
         },
       ]);
     } catch (err: unknown) {
       Alert.alert('Registration Error', err instanceof Error ? err.message : String(err));
+      setStatus('Failed to complete enrollment.');
     } finally {
       setIsProcessing(false);
     }
@@ -145,7 +193,6 @@ export function RegisterFaceScreen({ onNavigate }: RegisterFaceScreenProps) {
   const handleRetake = () => {
     setPreviewUri(null);
     setDetection(null);
-    setUserName('');
     setStatus('Center your face in the square');
   };
 
@@ -197,16 +244,13 @@ export function RegisterFaceScreen({ onNavigate }: RegisterFaceScreenProps) {
   }
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      style={styles.container}
-    >
+    <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
         {/* Top Header with Back Button */}
         <View style={styles.headerBar}>
           <TouchableOpacity
             style={styles.headerBackButton}
-            onPress={() => onNavigate?.('FaceMatchingHub')}
+            onPress={() => onNavigate?.('DocumentScan')}
             disabled={isProcessing}
           >
             <Text style={styles.headerBackText}>← Back</Text>
@@ -228,23 +272,9 @@ export function RegisterFaceScreen({ onNavigate }: RegisterFaceScreenProps) {
           <Text style={styles.statusBadge}>{status}</Text>
         </View>
 
-        {/* Controls and Name Form */}
+        {/* Controls */}
         {previewUri ? (
           <View style={styles.inputSection}>
-            {detection && (
-              <>
-                <Text style={styles.inputLabel}>Enter Person's Name:</Text>
-                <TextInput
-                  style={styles.textInput}
-                  placeholder="e.g. Alex Smith"
-                  placeholderTextColor="#666"
-                  value={userName}
-                  onChangeText={setUserName}
-                  autoFocus
-                />
-              </>
-            )}
-
             <View style={styles.actionRow}>
               <TouchableOpacity
                 style={styles.btnSecondary}
@@ -263,7 +293,7 @@ export function RegisterFaceScreen({ onNavigate }: RegisterFaceScreenProps) {
                   {isProcessing ? (
                     <ActivityIndicator color="#000" />
                   ) : (
-                    <Text style={styles.btnConfirmText}>Save Face</Text>
+                    <Text style={styles.btnConfirmText}>Enroll User</Text>
                   )}
                 </TouchableOpacity>
               )}
@@ -281,7 +311,7 @@ export function RegisterFaceScreen({ onNavigate }: RegisterFaceScreenProps) {
           </View>
         )}
       </ScrollView>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -347,19 +377,6 @@ const styles = StyleSheet.create({
     maxWidth: SQUARE_SIZE,
   },
   inputSection: { width: SQUARE_SIZE, marginTop: 16, alignItems: 'center' },
-  inputLabel: { color: '#AAA', fontSize: 13, alignSelf: 'flex-start', marginBottom: 6 },
-  textInput: {
-    width: '100%',
-    backgroundColor: '#1E1E1E',
-    borderWidth: 1,
-    borderColor: '#333',
-    borderRadius: 10,
-    color: '#FFF',
-    fontSize: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    marginBottom: 16,
-  },
   actionRow: { flexDirection: 'row', width: '100%', gap: 12 },
   btnSecondary: {
     flex: 1,

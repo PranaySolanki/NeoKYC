@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { StyleSheet, SafeAreaView, StatusBar } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { StyleSheet, SafeAreaView, StatusBar, BackHandler } from 'react-native';
 import { ModelProvider } from './src/assets/models/ModelContext';
 import {
   HomeScreen,
@@ -10,9 +10,11 @@ import {
   RegisterFaceScreen,
   VerifyFaceScreen,
 } from './src/screens';
+import { HomeDash } from './src/screens/HomeScreen/home_dash';
 
 export type ScreenName =
   | 'Home'
+  | 'HomeDash'
   | 'DocumentScan'
   | 'FaceLiveness'
   | 'Result'
@@ -21,46 +23,96 @@ export type ScreenName =
   | 'VerifyFace';
 
 export default function App() {
-  const [currentScreen, setCurrentScreen] = useState<ScreenName>('Home');
-  const [routeParams, setRouteParams] = useState<Record<string, unknown>>({});
+  const [currentScreen, setCurrentScreen] = useState<ScreenName>('HomeDash');
+  const [screenHistory, setScreenHistory] = useState<ScreenName[]>([]);
+  const [routeParams, setRouteParams] = useState<Record<string, any>>({});
+  const [flowMode, setFlowMode] = useState<'register' | 'verify'>('register');
 
-  const navigateTo = (screen: string, params?: Record<string, unknown>) => {
+  // Push new screens to history when navigating
+  const navigateTo = (screen: string, params?: Record<string, any>) => {
     if (params) {
       setRouteParams(params);
     }
+
+    if (screen === 'DocumentScan_Register') {
+      setFlowMode('register');
+      setScreenHistory((prev) => [...prev, currentScreen]);
+      setCurrentScreen('DocumentScan');
+      return;
+    }
+
+    if (screen === 'DocumentScan_Verify') {
+      setFlowMode('verify');
+      setScreenHistory((prev) => [...prev, currentScreen]);
+      setCurrentScreen('DocumentScan');
+      return;
+    }
+
+    setScreenHistory((prev) => [...prev, currentScreen]);
     setCurrentScreen(screen as ScreenName);
   };
 
+  // Pop and return to previous screen
+  const goBack = (): boolean => {
+    if (screenHistory.length > 0) {
+      const updatedHistory = [...screenHistory];
+      const previousScreen = updatedHistory.pop()!;
+      setScreenHistory(updatedHistory);
+      setCurrentScreen(previousScreen);
+      return true; // Tells Android: event handled, do NOT close app
+    }
+    return false; // On root screen: allow default exit behavior
+  };
+
+  // Bind Android hardware back press and side-swipe gestures
+  useEffect(() => {
+    const backAction = () => {
+      return goBack();
+    };
+
+    const backHandler = BackHandler.addEventListener(
+      'hardwareBackPress',
+      backAction
+    );
+
+    return () => backHandler.remove();
+  }, [screenHistory, currentScreen]);
+
   const renderCurrentScreen = () => {
     switch (currentScreen) {
-      // 1. Main Home Screen
+      case 'HomeDash':
+        return <HomeDash onNavigate={navigateTo} />;
+
       case 'Home':
         return <HomeScreen onNavigate={navigateTo} />;
 
-      // 2. ID / Document Scanning Flow
       case 'DocumentScan':
-        return <DocumentScanScreen onNavigate={navigateTo} />;
+        return (
+          <DocumentScanScreen
+            onNavigate={navigateTo}
+            flowMode={flowMode}
+          />
+        );
 
-      // 3. Face Liveness Flow (Passes down any OCR/Document data from Step 2)
       case 'FaceLiveness':
         return <FaceLivenessScreen onNavigate={navigateTo} />;
 
-      // 4. Verification / Results Screen
-      // case 'Result':
-      //   return <ResultScreen onNavigate={navigateTo} routeParams={routeParams} />;
-
-      // 5. Offline Biometrics Hub
       case 'FaceMatchingHub':
         return <FaceMatchingHubScreen onNavigate={navigateTo} />;
 
       case 'RegisterFace':
-        return <RegisterFaceScreen onNavigate={navigateTo} />;
+        return (
+          <RegisterFaceScreen
+            onNavigate={navigateTo}
+            applicantData={routeParams?.applicantData}
+          />
+        );
 
       case 'VerifyFace':
         return <VerifyFaceScreen onNavigate={navigateTo} />;
 
       default:
-        return <HomeScreen onNavigate={navigateTo} />;
+        return <HomeDash onNavigate={navigateTo} />;
     }
   };
 

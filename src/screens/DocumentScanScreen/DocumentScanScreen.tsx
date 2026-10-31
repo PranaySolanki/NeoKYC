@@ -15,7 +15,8 @@ import { recognizeText } from '@infinitered/react-native-mlkit-text-recognition'
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export interface DocumentScanScreenProps {
-  onNavigate?: (screenName: string) => void;
+  onNavigate?: (screenName: string, params?: Record<string, unknown>) => void;
+  flowMode?: 'register' | 'verify';
 }
 
 interface ExtractedFields {
@@ -46,7 +47,10 @@ interface SpatialLine {
   height: number;
 }
 
-export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({ onNavigate }) => {
+export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({
+  onNavigate,
+  flowMode = 'register',
+}) => {
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<any>(null);
 
@@ -261,6 +265,25 @@ export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({ onNaviga
     setStatusMessage('Position ID card inside the frame and capture.');
   };
 
+  const handleProceed = () => {
+    if (!parsedFields?.isValid || !isDetailsConfirmed) return;
+
+    const payload = {
+      applicantData: {
+        name: parsedFields.name,
+        dob: parsedFields.dob,
+        gender: parsedFields.gender,
+        id_number: parsedFields.id_number,
+      },
+    };
+
+    if (flowMode === 'register') {
+      onNavigate?.('RegisterFace', payload);
+    } else {
+      onNavigate?.('VerifyFace', payload);
+    }
+  };
+
   if (!permission?.granted) {
     return (
       <View style={styles.centerContainer}>
@@ -278,12 +301,14 @@ export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({ onNaviga
       <View style={styles.headerBar}>
         <TouchableOpacity
           style={styles.backButton}
-          onPress={() => onNavigate?.('Home')}
+          onPress={() => onNavigate?.('HomeDash')}
           disabled={isProcessing}
         >
           <Text style={styles.backButtonText}>← Back</Text>
         </TouchableOpacity>
-        <Text style={styles.title}>Document Verification</Text>
+        <Text style={styles.title}>
+          {flowMode === 'register' ? 'Register Document' : 'Verify Document'}
+        </Text>
         <View style={styles.headerSpacer} />
       </View>
       <Text
@@ -456,11 +481,13 @@ export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({ onNaviga
                 styles.nextButton,
                 !isDetailsConfirmed && styles.disabledNextButton,
               ]}
-              onPress={() => onNavigate?.('FaceLiveness')}
+              onPress={handleProceed}
               disabled={!isDetailsConfirmed}
               activeOpacity={0.8}
             >
-              <Text style={styles.buttonText}>Next: Face Liveness ➔</Text>
+              <Text style={styles.buttonText}>
+                {flowMode === 'register' ? 'Next: Face Registration ➔' : 'Next: Verify Face ➔'}
+              </Text>
             </TouchableOpacity>
           )}
 
@@ -474,14 +501,6 @@ export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({ onNaviga
           </TouchableOpacity>
         </View>
       )}
-
-      {/* Raw Output Preview */}
-      {/* <Text style={styles.resultLabel}>ML Kit OCR Output</Text>
-      <View style={styles.resultBox}>
-        <Text style={rawText ? styles.rawText : styles.placeholderText}>
-          {rawText || 'OCR output will appear here after capture.'}
-        </Text>
-      </View> */}
     </ScrollView>
   );
 };
@@ -751,29 +770,5 @@ const styles = StyleSheet.create({
     flex: 1,
     lineHeight: 17,
     fontWeight: '500',
-  },
-  resultLabel: {
-    color: '#CBD5E1',
-    fontSize: 14,
-    fontWeight: '700',
-    marginBottom: 8,
-  },
-  resultBox: {
-    backgroundColor: '#020617',
-    borderColor: '#334155',
-    borderRadius: 12,
-    borderWidth: 1,
-    minHeight: 100,
-    padding: 16,
-  },
-  rawText: {
-    color: '#E2E8F0',
-    fontSize: 14,
-    lineHeight: 21,
-  },
-  placeholderText: {
-    color: '#64748B',
-    fontSize: 14,
-    fontStyle: 'italic',
   },
 });
