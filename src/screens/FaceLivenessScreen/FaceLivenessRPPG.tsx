@@ -417,7 +417,7 @@ export const FaceLivenessScreen: React.FC<FaceLivenessScreenProps> = ({ onNaviga
         <View style={styles.telemetry}><Text style={styles.telemetryTitle}>Vital telemetry</Text><Text style={styles.telemetryValue}>{verificationResult?.rppgTelemetry.isMeasurementReliable && verificationResult.rppgTelemetry.estimatedBpm !== null ? `Pulse: ${verificationResult.rppgTelemetry.estimatedBpm.toFixed(0)} BPM` : `Pulse: Inconclusive (Confidence: ${Math.round((verificationResult?.rppgTelemetry.signalQualityScore ?? 0) * 100)}%)`}</Text><Text style={styles.telemetryTitle}>Signal Confidence: {Math.round((verificationResult?.rppgTelemetry.signalQualityScore ?? 0) * 100)}%</Text><Text style={styles.privacyNote}>Pulse confidence does not affect the liveness verdict.</Text></View>
         <TouchableOpacity style={styles.primaryButton} onPress={restart}><Text style={styles.primaryButtonText}>Run again</Text></TouchableOpacity>
         {sessionResult === 'passed' && <TouchableOpacity style={styles.secondaryButton} onPress={() => onNavigate?.('RegisterFace')}><Text style={styles.secondaryButtonText}>Continue to next step</Text></TouchableOpacity>}
-        <TouchableOpacity style={styles.secondaryButton} onPress={() => onNavigate?.('Home')}><Text style={styles.secondaryButtonText}>Done</Text></TouchableOpacity>
+        <TouchableOpacity style={styles.secondaryButton} onPress={() => onNavigate?.('HomeDash')}><Text style={styles.secondaryButtonText}>Done</Text></TouchableOpacity>
       </View>}
     </>}
   </ScrollView>;
