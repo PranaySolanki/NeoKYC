@@ -12,7 +12,8 @@
           "photosPermission": "Allow NeoKYC to select an identity document for text extraction.",
           "microphonePermission": false
         }
-      ]
+      ],
+      "./plugins/withRppgRoiMeans"
     ],
     "ios": {
       "infoPlist": {
