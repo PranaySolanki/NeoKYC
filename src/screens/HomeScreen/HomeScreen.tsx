@@ -25,7 +25,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onNavigate }) => {
 
         <TouchableOpacity
           style={[styles.button, styles.secondaryButton]}
-          onPress={() => onNavigate('FaceLiveness')}
+          onPress={() => onNavigate('')}
         >
           <Text style={styles.buttonText}>2. Liveness Check Screen</Text>
         </TouchableOpacity>
