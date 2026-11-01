@@ -12,8 +12,8 @@ require.extensions['.ts'] = (module, filename) => {
   module._compile(output, filename);
 };
 
-const { createGestureHoldState, evaluateGestureFrame, FacePresenceTracker, GestureProgressTracker, isFaceAlignedToGuide, isQuiescentRppgFrame, pickGestureChallenges } = require('../src/services/gestureStateMachine.ts');
-const { estimatePulse, makeLivenessVerificationResult } = require('../src/services/experimentalRppg.ts');
+const { createGestureHoldState, evaluateGestureFrame, FaceIdentityTracker, FacePresenceTracker, GestureProgressTracker, isFaceAlignedToGuide, isQuiescentRppgFrame, pickGestureChallenges } = require('../src/services/gestureStateMachine.ts');
+const { calculateRppgConfidence, estimatePulse, makeLivenessVerificationResult } = require('../src/services/experimentalRppg.ts');
 
 const neutral = (timestampMs, overrides = {}) => ({
   timestampMs, yaw: 0, pitch: 0, smile: 0,
@@ -124,6 +124,16 @@ test('multiple faces require 500 ms continuous presence before timeout', () => {
   assert.equal(tracker.evaluate(2, 1300), 'MULTIPLE_FACES_TIMEOUT');
 });
 
+test('tracking ID replacement is identified as a person change', () => {
+  const tracker = new FaceIdentityTracker();
+  assert.equal(tracker.observe(17), 'INITIAL');
+  assert.equal(tracker.observe(null), 'SAME', 'a missing ID does not erase the session identity');
+  assert.equal(tracker.observe(17), 'SAME');
+  assert.equal(tracker.observe(23), 'CHANGED');
+  tracker.reset();
+  assert.equal(tracker.observe(23), 'INITIAL');
+});
+
 test('turn gestures may cross the visual oval without becoming a face-presence failure', () => {
   const presence = new FacePresenceTracker();
   const tracker = new GestureProgressTracker(['TURN_LEFT']);
@@ -146,6 +156,8 @@ test('turn gestures may cross the visual oval without becoming a face-presence f
 test('rPPG quiescent filter accepts steady frontal frames and rejects pose or fast motion', () => {
   const first = { yaw: 0, pitch: 0, centerX: 0.5, centerY: 0.5, timestampMs: 0 };
   assert.equal(isQuiescentRppgFrame(first, null), true);
+  assert.equal(isQuiescentRppgFrame({ ...first, yaw: 8, timestampMs: 33 }, first), false);
+  assert.equal(isQuiescentRppgFrame({ ...first, pitch: -8, timestampMs: 33 }, first), false);
   assert.equal(isQuiescentRppgFrame({ ...first, yaw: 9, timestampMs: 33 }, first), false);
   assert.equal(isQuiescentRppgFrame({ ...first, centerX: 0.55, timestampMs: 100 }, first), false);
   assert.equal(isQuiescentRppgFrame({ ...first, centerX: 0.505, timestampMs: 100 }, first), true);
@@ -162,6 +174,13 @@ test('POS accepts a clean 72 BPM pulse signal above the relaxed SNR threshold', 
   assert.ok(Math.abs(telemetry.estimatedBpm - 72) <= 1);
 });
 
+test('pulse confidence follows the requested SNR-to-percentage mapping', () => {
+  assert.equal(calculateRppgConfidence(1.0), 0.2);
+  assert.equal(calculateRppgConfidence(1.75), 0.5);
+  assert.equal(calculateRppgConfidence(3.0), 1);
+  assert.equal(calculateRppgConfidence(-2), 0);
+});
+
 test('3 of 4 gestures pass, fewer fail, and pulse telemetry never changes liveness', () => {
   const noPulse = { estimatedBpm: null, signalQualityScore: 0, isMeasurementReliable: false };
   const flatSamples = Array.from({ length: 120 }, (_, index) => ({
@@ -172,10 +191,14 @@ test('3 of 4 gestures pass, fewer fail, and pulse telemetry never changes livene
   assert.equal(lowSnrPulse.estimatedBpm, null);
   assert.equal(makeLivenessVerificationResult(3, 4, noPulse, true).livenessPassed, true);
   assert.equal(makeLivenessVerificationResult(3, 4, lowSnrPulse, true).livenessPassed, true, 'low SNR must not affect liveness');
+  assert.equal(makeLivenessVerificationResult(3, 4, { estimatedBpm: null, signalQualityScore: 0.2, isMeasurementReliable: false }, true).livenessPassed, true, 'confidence below 40% must not affect liveness');
   assert.equal(makeLivenessVerificationResult(2, 4, noPulse, true).livenessPassed, false);
   const faceLost = makeLivenessVerificationResult(4, 4, noPulse, false, [], 'FACE_OUT_OF_BOUNDS');
   assert.equal(faceLost.livenessPassed, false);
   assert.equal(faceLost.failureReason, 'FACE_OUT_OF_BOUNDS');
+  const personChanged = makeLivenessVerificationResult(4, 4, noPulse, false, [], 'FACE_SWAP_DETECTED');
+  assert.equal(personChanged.livenessPassed, false);
+  assert.equal(personChanged.failureReason, 'FACE_SWAP_DETECTED');
 });
 
 test('timed-out challenges remain missed while later challenges can pass', () => {

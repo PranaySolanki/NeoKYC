@@ -18,7 +18,7 @@ export interface LivenessVerificationResult {
   livenessScore: number;
   rppgTelemetry: RppgTelemetry;
   faceMaintained: boolean;
-  failureReason: 'MULTIPLE_FACES_DETECTED' | 'FACE_OUT_OF_BOUNDS' | 'INCOMPLETE_GESTURES' | null;
+  failureReason: 'MULTIPLE_FACES_DETECTED' | 'FACE_OUT_OF_BOUNDS' | 'FACE_SWAP_DETECTED' | 'INCOMPLETE_GESTURES' | null;
   gestureBreakdown: Array<{ gesture: string; status: 'Completed' | 'Missed' }>;
 }
 
@@ -83,7 +83,11 @@ export function makeLivenessVerificationResult(
 
 const SAMPLE_RATE = 30;
 const MIN_SAMPLES = 120;
-const MIN_SNR_DB = 1.0;
+const MIN_CONFIDENCE = 0.4;
+
+export function calculateRppgConfidence(snrDb: number): number {
+  return Math.max(0, Math.min(1, (snrDb - 0.5) / 2.5));
+}
 
 export function estimatePulse(samples: readonly FrameSample[]): RppgTelemetry {
   const inconclusive: RppgTelemetry = { estimatedBpm: null, signalQualityScore: 0, isMeasurementReliable: false };
@@ -155,9 +159,12 @@ export function estimatePulse(samples: readonly FrameSample[]): RppgTelemetry {
   }
   const peak = powers.reduce((a, b) => b.power > a.power ? b : a);
   const noise = powers.filter(p => Math.abs(p.hz - peak.hz) > 0.12).map(p => p.power);
-  const noiseMean = noise.reduce((a, b) => a + b, 0) / Math.max(1, noise.length);
-  const snrDb = 10 * Math.log10((peak.power + 1e-12) / (noiseMean + 1e-12));
-  const quality = Math.max(0, Math.min(1, (snrDb - MIN_SNR_DB) / 12));
-  const reliable = snrDb >= MIN_SNR_DB && Number.isFinite(peak.hz);
+  // Use the average off-peak in-band power as the spectral noise floor.
+  const noisePower = noise.reduce((a, b) => a + b, 0) / Math.max(1, noise.length);
+  const snrDb = 10 * Math.log10((peak.power + 1e-12) / (noisePower + 1e-12));
+  // Map the requested SNR range (0.5–3.0 dB) to an interpretable
+  // 0–100 confidence score. Confidence remains telemetry only.
+  const quality = calculateRppgConfidence(snrDb);
+  const reliable = quality >= MIN_CONFIDENCE && Number.isFinite(peak.hz);
   return { estimatedBpm: reliable ? peak.hz * 60 : null, signalQualityScore: quality, isMeasurementReliable: reliable };
 }

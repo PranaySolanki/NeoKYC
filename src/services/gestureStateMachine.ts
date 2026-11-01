@@ -1,5 +1,5 @@
 export type GestureChallenge = 'BLINK' | 'SMILE' | 'TURN_LEFT' | 'TURN_RIGHT' | 'LOOK_UP';
-export type LivenessFailureReason = 'MULTIPLE_FACES_DETECTED' | 'FACE_OUT_OF_BOUNDS' | 'INCOMPLETE_GESTURES';
+export type LivenessFailureReason = 'MULTIPLE_FACES_DETECTED' | 'FACE_OUT_OF_BOUNDS' | 'FACE_SWAP_DETECTED' | 'INCOMPLETE_GESTURES';
 
 const GESTURE_POOL: readonly GestureChallenge[] = ['BLINK', 'SMILE', 'TURN_LEFT', 'TURN_RIGHT', 'LOOK_UP'];
 
@@ -155,12 +155,28 @@ export class FacePresenceTracker {
   }
 }
 
+/** Keeps the first non-null ML Kit tracking ID as this session's face identity. */
+export class FaceIdentityTracker {
+  private initialTrackingId: number | null = null;
+
+  observe(trackingId: number | null): 'INITIAL' | 'SAME' | 'CHANGED' {
+    if (trackingId === null) return this.initialTrackingId === null ? 'INITIAL' : 'SAME';
+    if (this.initialTrackingId === null) {
+      this.initialTrackingId = trackingId;
+      return 'INITIAL';
+    }
+    return trackingId === this.initialTrackingId ? 'SAME' : 'CHANGED';
+  }
+
+  reset(): void { this.initialTrackingId = null; }
+}
+
 export interface RppgFaceMotion { yaw: number; pitch: number; centerX: number; centerY: number; timestampMs: number; }
 
 /** True only for forward-facing observations with low normalized centroid velocity. */
 export function isQuiescentRppgFrame(current: RppgFaceMotion, previous: RppgFaceMotion | null, maxVelocity = 0.25): boolean {
   'worklet';
-  if (Math.abs(current.yaw) > 8 || Math.abs(current.pitch) > 8) return false;
+  if (Math.abs(current.yaw) >= 8 || Math.abs(current.pitch) >= 8) return false;
   if (!previous) return true;
   const elapsedSeconds = (current.timestampMs - previous.timestampMs) / 1000;
   if (elapsedSeconds <= 0 || elapsedSeconds > 0.25) return false;
