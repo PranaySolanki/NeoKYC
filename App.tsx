@@ -4,7 +4,7 @@ import { ModelProvider } from './src/assets/models/ModelContext';
 import {
   HomeScreen,
   DocumentScanScreen,
-  FaceLivenessScreen,
+  FaceLivenessRPPG,
   ResultScreen,
   FaceMatchingHubScreen,
   RegisterFaceScreen,
@@ -16,7 +16,7 @@ export type ScreenName =
   | 'Home'
   | 'HomeDash'
   | 'DocumentScan'
-  | 'FaceLiveness'
+  | 'FaceLivenessRPPG'
   | 'Result'
   | 'FaceMatchingHub'
   | 'RegisterFace'
@@ -28,11 +28,8 @@ export default function App() {
   const [routeParams, setRouteParams] = useState<Record<string, any>>({});
   const [flowMode, setFlowMode] = useState<'register' | 'verify'>('register');
 
-  // Push new screens to history when navigating
   const navigateTo = (screen: string, params?: Record<string, any>) => {
-    if (params) {
-      setRouteParams(params);
-    }
+    if (params) setRouteParams(params);
 
     if (screen === 'DocumentScan_Register') {
       setFlowMode('register');
@@ -52,30 +49,21 @@ export default function App() {
     setCurrentScreen(screen as ScreenName);
   };
 
-  // Pop and return to previous screen
   const goBack = (): boolean => {
     if (screenHistory.length > 0) {
-      const updatedHistory = [...screenHistory];
-      const previousScreen = updatedHistory.pop()!;
-      setScreenHistory(updatedHistory);
-      setCurrentScreen(previousScreen);
-      return true; // Tells Android: event handled, do NOT close app
+      const updated = [...screenHistory];
+      const prev = updated.pop()!;
+      setScreenHistory(updated);
+      setCurrentScreen(prev);
+      return true;
     }
-    return false; // On root screen: allow default exit behavior
+    return false;
   };
 
-  // Bind Android hardware back press and side-swipe gestures
   useEffect(() => {
-    const backAction = () => {
-      return goBack();
-    };
-
-    const backHandler = BackHandler.addEventListener(
-      'hardwareBackPress',
-      backAction
-    );
-
-    return () => backHandler.remove();
+    const backAction = () => goBack();
+    const handler = BackHandler.addEventListener('hardwareBackPress', backAction);
+    return () => handler.remove();
   }, [screenHistory, currentScreen]);
 
   const renderCurrentScreen = () => {
@@ -94,8 +82,26 @@ export default function App() {
           />
         );
 
-      case 'FaceLiveness':
-        return <FaceLivenessScreen onNavigate={navigateTo} />;
+      case 'FaceLivenessRPPG':
+        return (
+          <FaceLivenessRPPG
+            onNavigate={navigateTo}
+            applicantData={routeParams?.applicantData}
+            idSha256={routeParams?.idSha256}
+          />
+        );
+
+      case 'Result':
+        return (
+          <ResultScreen
+            onNavigate={navigateTo}
+            applicantData={routeParams?.applicantData}
+            idSha256={routeParams?.idSha256}
+            liveVector={routeParams?.liveVector}
+            livenessResult={routeParams?.livenessResult}
+            pulseBpm={routeParams?.pulseBpm}
+          />
+        );
 
       case 'FaceMatchingHub':
         return <FaceMatchingHubScreen onNavigate={navigateTo} />;
@@ -118,7 +124,7 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.rootContainer}>
-      <StatusBar barStyle="light-content" backgroundColor="#121212" />
+      <StatusBar barStyle="light-content" backgroundColor="#0F172A" />
       <ModelProvider>
         {renderCurrentScreen()}
       </ModelProvider>
@@ -129,6 +135,6 @@ export default function App() {
 const styles = StyleSheet.create({
   rootContainer: {
     flex: 1,
-    backgroundColor: '#121212',
+    backgroundColor: '#0F172A',
   },
 });

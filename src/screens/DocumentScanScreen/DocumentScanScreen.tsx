@@ -8,9 +8,11 @@ import {
   ActivityIndicator,
   Dimensions,
   Image,
+  Alert,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { recognizeText } from '@infinitered/react-native-mlkit-text-recognition';
+import * as Crypto from 'expo-crypto';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -265,22 +267,40 @@ export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({
     setStatusMessage('Position ID card inside the frame and capture.');
   };
 
-  const handleProceed = () => {
+  const handleProceed = async () => {
     if (!parsedFields?.isValid || !isDetailsConfirmed) return;
 
-    const payload = {
-      applicantData: {
-        name: parsedFields.name,
-        dob: parsedFields.dob,
-        gender: parsedFields.gender,
-        id_number: parsedFields.id_number,
-      },
+    const applicantData = {
+      name: parsedFields.name,
+      dob: parsedFields.dob,
+      gender: parsedFields.gender,
+      id_number: parsedFields.id_number,
     };
 
     if (flowMode === 'register') {
-      onNavigate?.('RegisterFace', payload);
-    } else {
-      onNavigate?.('VerifyFace', payload);
+      onNavigate?.('RegisterFace', { applicantData });
+      return;
+    }
+
+    // VERIFY FLOW: Hash ID on-device and pass forward directly without DB query
+    try {
+      setIsProcessing(true);
+      setStatusMessage('Securing identity hash for session...');
+
+      const idSha256 = await Crypto.digestStringAsync(
+        Crypto.CryptoDigestAlgorithm.SHA256,
+        parsedFields.id_number!
+      );
+
+      // Route directly to your liveness/rPPG screen
+      onNavigate?.('FaceLivenessRPPG', {
+        applicantData,
+        idSha256,
+      });
+    } catch (err: any) {
+      Alert.alert('Processing Error', err.message || 'Hashing failed.');
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -297,20 +317,20 @@ export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({
 
   return (
     <ScrollView contentContainerStyle={styles.scrollContainer}>
-      {/* Top Header with Back Button */}
       <View style={styles.headerBar}>
         <TouchableOpacity
           style={styles.backButton}
           onPress={() => onNavigate?.('HomeDash')}
           disabled={isProcessing}
         >
-          <Text style={styles.backButtonText}>← Back</Text>
+          <Text style={styles.backButtonText}>← Dashboard</Text>
         </TouchableOpacity>
         <Text style={styles.title}>
           {flowMode === 'register' ? 'Register Document' : 'Verify Document'}
         </Text>
         <View style={styles.headerSpacer} />
       </View>
+
       <Text
         style={[
           styles.subtitle,
@@ -320,7 +340,6 @@ export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({
         {statusMessage}
       </Text>
 
-      {/* Viewfinder: Active Camera or Frozen Still Frame */}
       <View style={styles.cameraContainer}>
         {capturedImageUri ? (
           <Image
@@ -339,7 +358,6 @@ export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({
 
         <View style={styles.darkMask} />
 
-        {/* Torch Toggle */}
         {!capturedImageUri && (
           <TouchableOpacity
             style={[styles.flashButton, isTorchOn && styles.flashButtonActive]}
@@ -349,7 +367,6 @@ export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({
           </TouchableOpacity>
         )}
 
-        {/* Alignment Guide */}
         <View
           style={[
             styles.guideBox,
@@ -370,7 +387,6 @@ export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({
         </View>
       </View>
 
-      {/* Initial Capture Action */}
       {!capturedImageUri && (
         <TouchableOpacity
           style={[styles.primaryButton, isProcessing && styles.disabledButton]}
@@ -385,7 +401,6 @@ export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({
         </TouchableOpacity>
       )}
 
-      {/* Structured KYC Identity Record */}
       {parsedFields && (
         <View
           style={[
@@ -407,36 +422,21 @@ export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({
 
           <View style={styles.fieldRow}>
             <Text style={styles.fieldKey}>Name:</Text>
-            <Text
-              style={[
-                styles.fieldVal,
-                !parsedFields.name && styles.missingVal,
-              ]}
-            >
+            <Text style={[styles.fieldVal, !parsedFields.name && styles.missingVal]}>
               {parsedFields.name || 'Not detected'}
             </Text>
           </View>
 
           <View style={styles.fieldRow}>
             <Text style={styles.fieldKey}>DOB / Year:</Text>
-            <Text
-              style={[
-                styles.fieldVal,
-                !parsedFields.dob && styles.missingVal,
-              ]}
-            >
+            <Text style={[styles.fieldVal, !parsedFields.dob && styles.missingVal]}>
               {parsedFields.dob || 'Not detected'}
             </Text>
           </View>
 
           <View style={styles.fieldRow}>
             <Text style={styles.fieldKey}>Gender:</Text>
-            <Text
-              style={[
-                styles.fieldVal,
-                !parsedFields.gender && styles.missingVal,
-              ]}
-            >
+            <Text style={[styles.fieldVal, !parsedFields.gender && styles.missingVal]}>
               {parsedFields.gender || 'Not detected'}
             </Text>
           </View>
@@ -453,7 +453,6 @@ export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({
             </Text>
           </View>
 
-          {/* User Confirmation Checkbox */}
           {parsedFields.isValid && (
             <TouchableOpacity
               style={styles.checkboxContainer}
@@ -471,7 +470,6 @@ export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({
         </View>
       )}
 
-      {/* Post-Scan Actions */}
       {capturedImageUri && (
         <View style={styles.actionButtonsContainer}>
           {parsedFields?.isValid && (
@@ -479,21 +477,28 @@ export const DocumentScanScreen: React.FC<DocumentScanScreenProps> = ({
               style={[
                 styles.primaryButton,
                 styles.nextButton,
-                !isDetailsConfirmed && styles.disabledNextButton,
+                (!isDetailsConfirmed || isProcessing) && styles.disabledNextButton,
               ]}
               onPress={handleProceed}
-              disabled={!isDetailsConfirmed}
+              disabled={!isDetailsConfirmed || isProcessing}
               activeOpacity={0.8}
             >
-              <Text style={styles.buttonText}>
-                {flowMode === 'register' ? 'Next: Face Registration ➔' : 'Next: Verify Face ➔'}
-              </Text>
+              {isProcessing ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <Text style={styles.buttonText}>
+                  {flowMode === 'register'
+                    ? 'Next: Face Registration ➔'
+                    : 'Next: Live Liveness & Face Verification ➔'}
+                </Text>
+              )}
             </TouchableOpacity>
           )}
 
           <TouchableOpacity
             style={[styles.primaryButton, styles.recaptureButton]}
             onPress={handleRecapture}
+            disabled={isProcessing}
           >
             <Text style={styles.recaptureButtonText}>
               {parsedFields?.isValid ? '🔄 Retake Picture' : '⚠️ Retake Clear Picture'}
